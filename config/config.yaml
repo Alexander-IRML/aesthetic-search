@@ -1,0 +1,15 @@
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  database: data/artsearch.db
+
+images:
+  canonical_size: 448
+  crop_threshold: 2.5
+  output_format: jpeg
+  jpeg_quality: 95
+  padding_fill_strategy: neutral_gray
+  neutral_gray_value: 128
+
+duplicates:
+  phash_distance_threshold: 6

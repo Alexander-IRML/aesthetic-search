@@ -1,0 +1,16 @@
+# Public example artist manifest.
+#
+# For a private/local corpus, copy this file to config/artists.local.yaml and put
+# real artist IDs, folder names, URLs, or notes there. The local manifest is
+# ignored by git.
+artists:
+  - artist_id: example_artist_one
+    display_name: Example Artist One
+    folder_name: example_artist_one
+    source_url:
+    notes:
+  - artist_id: example_artist_two
+    display_name: Example Artist Two
+    folder_name: example_artist_two
+    source_url:
+    notes:

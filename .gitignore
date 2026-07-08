@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ArtSearch generated data
+data/raw/
+data/processed/
+data/artsearch.db
+data/*.db
