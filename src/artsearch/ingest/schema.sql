@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS artists (
     artist_id      TEXT PRIMARY KEY,
     display_name   TEXT NOT NULL,
     folder_name    TEXT NOT NULL UNIQUE,
+    source_platform TEXT DEFAULT 'manual',
     source_url     TEXT,
     notes          TEXT,
     date_added     TEXT DEFAULT CURRENT_TIMESTAMP
@@ -47,6 +48,22 @@ CREATE TABLE IF NOT EXISTS artworks (
     UNIQUE(source_platform, source_id)
 );
 
+CREATE TABLE IF NOT EXISTS embeddings (
+    artwork_id            TEXT PRIMARY KEY REFERENCES artworks(artwork_id),
+    clip_vector           BLOB,
+    clip_dim              INTEGER,
+    dino_pooled           BLOB,
+    dino_pooled_dim       INTEGER,
+    dino_patches          BLOB,
+    dino_patch_grid_size  INTEGER,
+    dino_patch_dim        INTEGER,
+    model_name_clip       TEXT,
+    model_version_clip    TEXT,
+    model_name_dino       TEXT,
+    model_version_dino    TEXT,
+    date_computed         TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS runs (
     run_id           INTEGER PRIMARY KEY AUTOINCREMENT,
     script_name      TEXT NOT NULL,
@@ -73,4 +90,6 @@ CREATE INDEX IF NOT EXISTS idx_artworks_artist ON artworks(artist_id);
 CREATE INDEX IF NOT EXISTS idx_artworks_file_hash ON artworks(file_hash);
 CREATE INDEX IF NOT EXISTS idx_artworks_phash ON artworks(phash);
 CREATE INDEX IF NOT EXISTS idx_artworks_review_status ON artworks(review_status);
+CREATE INDEX IF NOT EXISTS idx_embeddings_models
+    ON embeddings(model_name_dino, model_version_dino, model_name_clip, model_version_clip);
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id);

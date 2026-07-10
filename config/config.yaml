@@ -13,3 +13,18 @@ images:
 
 duplicates:
   phash_distance_threshold: 6
+
+models:
+  clip_model_name: openai/clip-vit-base-patch32
+  clip_model_version: main
+  dino_model_name: facebook/dinov2-with-registers-base
+  dino_model_version: main
+
+embeddings:
+  batch_size: 4
+  device: cpu
+
+retrieval:
+  default_top_k: 12
+  demo_output: data/search_demo.html
+  gallery_output: data/search_gallery.html

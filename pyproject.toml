@@ -11,11 +11,17 @@ requires-python = ">=3.11"
 license = { file = "LICENSE" }
 dependencies = [
     "imagehash>=4.3.1",
+    "numpy>=2.0.0",
     "pillow>=10.0.0",
     "pyyaml>=6.0.0",
 ]
 
 [project.optional-dependencies]
+embed = [
+    "torch>=2.3.0",
+    "torchvision>=0.18.0",
+    "transformers>=4.48.0",
+]
 dev = [
     "pytest>=8.0.0",
     "ruff>=0.5.0",
@@ -25,6 +31,9 @@ dev = [
 artsearch-init-db = "artsearch.ingest.cli:init_db_main"
 artsearch-register-artists = "artsearch.ingest.cli:register_artists_main"
 artsearch-standardize = "artsearch.ingest.cli:standardize_main"
+artsearch-embed = "artsearch.embed.cli:embed_main"
+artsearch-search-demo = "artsearch.retrieval.cli:search_demo_main"
+artsearch-gallery-demo = "artsearch.retrieval.cli:gallery_demo_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/artsearch"]

@@ -163,13 +163,15 @@ def _process_one(
     if same_file_as_existing:
         duplicate_of = existing["duplicate_of"]
         review_status = existing["review_status"] or "unreviewed"
+        near_duplicate_of = None
     else:
-        duplicate_of = _find_near_duplicate(
+        near_duplicate_of = _find_near_duplicate(
             conn,
             phash,
             config.duplicates.phash_distance_threshold,
             exclude_artwork_id=artwork_id,
         )
+        duplicate_of = None
         review_status = "unreviewed"
 
     if not existing:
@@ -236,6 +238,16 @@ def _process_one(
         artwork_id=artwork_id,
         message=f"Standardized image with transform {asdict(transform)}",
     )
+    if near_duplicate_of is not None:
+        log_event(
+            conn,
+            run_id,
+            level="warning",
+            event_type="near_duplicate_review",
+            raw_path=raw_rel,
+            artwork_id=artwork_id,
+            message=f"Likely near-duplicate of artwork {near_duplicate_of}",
+        )
     return {"processed": 1, "skipped": 0, "errors": 0}
 
 

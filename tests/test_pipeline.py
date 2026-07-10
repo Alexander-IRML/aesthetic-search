@@ -2,7 +2,14 @@ from types import SimpleNamespace
 
 from artsearch.ingest import pipeline
 from artsearch.ingest.artists import ArtistRecord, register_artist
-from artsearch.ingest.config import AppConfig, DuplicateConfig, ImageConfig
+from artsearch.ingest.config import (
+    AppConfig,
+    DuplicateConfig,
+    EmbeddingConfig,
+    ImageConfig,
+    ModelConfig,
+    RetrievalConfig,
+)
 from artsearch.ingest.db import connect, init_db, insert_artwork, log_event, start_run
 from artsearch.ingest.transforms import TransformPlan
 
@@ -22,6 +29,18 @@ def _config(tmp_path):
             neutral_gray_value=128,
         ),
         duplicates=DuplicateConfig(phash_distance_threshold=6),
+        models=ModelConfig(
+            clip_model_name="clip-model",
+            clip_model_version="v1",
+            dino_model_name="dino-model",
+            dino_model_version="v1",
+        ),
+        embeddings=EmbeddingConfig(batch_size=2, device="cpu"),
+        retrieval=RetrievalConfig(
+            default_top_k=5,
+            demo_output_path=tmp_path / "search_demo.html",
+            gallery_output_path=tmp_path / "search_gallery.html",
+        ),
     )
 
 

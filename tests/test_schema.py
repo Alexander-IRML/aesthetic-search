@@ -20,3 +20,4 @@ def test_schema_initializes_and_registers_artist(tmp_path):
 
     assert row["display_name"] == "Artist One"
     assert row["folder_name"] == "artist_one"
+    assert row["source_platform"] == "manual"
