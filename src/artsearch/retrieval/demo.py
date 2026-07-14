@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from html import escape
-import os
 import json
+import os
 from pathlib import Path
 
 from artsearch.ingest.config import AppConfig, load_config
 from artsearch.ingest.db import connect, init_db
-from artsearch.retrieval.search import SearchResult, get_artwork_for_demo, search_similar
+from artsearch.retrieval.search import (
+    SUPPORTED_RETRIEVAL_MODES,
+    RetrievalMode,
+    SearchFilters,
+    SearchResult,
+    get_artwork_for_demo,
+    search_similar,
+)
 
 
 def write_search_demo(
@@ -16,6 +24,10 @@ def write_search_demo(
     config_path: str | Path = "config/config.yaml",
     output_path: str | Path | None = None,
     top_k: int | None = None,
+    mode: RetrievalMode | str | None = None,
+    include_same_artist: bool = False,
+    review_status: str | None = None,
+    is_sfw: bool | None = None,
 ) -> Path:
     config = load_config(config_path)
     destination = (
@@ -27,13 +39,36 @@ def write_search_demo(
         destination = config.root_dir / destination
     destination.parent.mkdir(parents=True, exist_ok=True)
 
+    filters = SearchFilters(
+        top_k=top_k,
+        include_same_artist=include_same_artist,
+        review_status=review_status,
+        is_sfw=is_sfw,
+    )
+    modes = _mode_list(mode, default=SUPPORTED_RETRIEVAL_MODES)
+
     with connect(config.database_path) as conn:
         init_db(conn)
         query = get_artwork_for_demo(conn, config, query_artwork_id)
-        results = search_similar(conn, config, query_artwork_id, top_k=top_k)
+        mode_payloads = []
+        for retrieval_mode in modes:
+            results = search_similar(
+                conn,
+                config,
+                query_artwork_id,
+                mode=retrieval_mode,
+                filters=filters,
+            )
+            mode_payloads.append(
+                _mode_payload(config, destination, retrieval_mode, query, results)
+            )
 
     destination.write_text(
-        _render_html(config, destination, query, results),
+        _render_search_html(
+            query_artwork_id=query_artwork_id,
+            mode_payloads=mode_payloads,
+            filters=filters,
+        ),
         encoding="utf-8",
     )
     return destination
@@ -45,6 +80,10 @@ def write_gallery_demo(
     output_path: str | Path | None = None,
     sample_per_artist: int = 3,
     top_k: int = 10,
+    mode: RetrievalMode | str = RetrievalMode.DINO_POOLED,
+    include_same_artist: bool = False,
+    review_status: str | None = None,
+    is_sfw: bool | None = None,
 ) -> Path:
     config = load_config(config_path)
     destination = (
@@ -56,42 +95,230 @@ def write_gallery_demo(
         destination = config.root_dir / destination
     destination.parent.mkdir(parents=True, exist_ok=True)
 
+    retrieval_mode = RetrievalMode.coerce(mode)
+    filters = SearchFilters(
+        top_k=top_k,
+        include_same_artist=include_same_artist,
+        review_status=review_status,
+        is_sfw=is_sfw,
+    )
+
     with connect(config.database_path) as conn:
         init_db(conn)
-        queries = _sample_gallery_queries(conn, config, sample_per_artist)
-        payload = []
+        queries = _sample_gallery_queries(conn, config, sample_per_artist, filters)
+        query_payloads = []
         for query in queries:
-            results = search_similar(conn, config, query.artwork_id, top_k=top_k)
-            payload.append(_gallery_payload(config, destination, query, results))
+            results = search_similar(
+                conn,
+                config,
+                query.artwork_id,
+                mode=retrieval_mode,
+                filters=filters,
+            )
+            query_payloads.append(
+                _gallery_payload(config, destination, retrieval_mode, query, results)
+            )
 
-    destination.write_text(_render_gallery_html(payload), encoding="utf-8")
+    destination.write_text(
+        _render_gallery_html(
+            {
+                "mode": _mode_info(retrieval_mode),
+                "filters": _filters_payload(filters),
+                "queries": query_payloads,
+            }
+        ),
+        encoding="utf-8",
+    )
     return destination
 
 
-def _render_html(
+def _mode_list(
+    mode: RetrievalMode | str | None,
+    *,
+    default: Sequence[RetrievalMode],
+) -> list[RetrievalMode]:
+    if mode is None or mode == "all":
+        return list(default)
+    return [RetrievalMode.coerce(mode)]
+
+
+def _mode_info(mode: RetrievalMode) -> dict:
+    return {
+        "value": mode.value,
+        "label": mode.label,
+    }
+
+
+def _mode_payload(
     config: AppConfig,
     destination: Path,
+    mode: RetrievalMode,
     query: SearchResult,
     results: list[SearchResult],
+) -> dict:
+    return {
+        "mode": _mode_info(mode),
+        "query": _demo_item(config, destination, query),
+        "results": [_demo_item(config, destination, result) for result in results],
+    }
+
+
+def _gallery_payload(
+    config: AppConfig,
+    destination: Path,
+    mode: RetrievalMode,
+    query: SearchResult,
+    results: list[SearchResult],
+) -> dict:
+    return {
+        "mode": _mode_info(mode),
+        "query": _demo_item(config, destination, query),
+        "results": [_demo_item(config, destination, result) for result in results],
+    }
+
+
+def _demo_item(config: AppConfig, destination: Path, result: SearchResult) -> dict:
+    return {
+        "artworkId": result.artwork_id,
+        "artistId": result.artist_id,
+        "artistName": result.artist_display_name,
+        "imageSrc": _relative_image_src(config, destination, result.processed_path),
+        "score": result.score,
+        "mode": result.mode.value,
+        "reviewStatus": result.review_status,
+        "isSfw": result.is_sfw,
+    }
+
+
+def _filters_payload(filters: SearchFilters) -> dict:
+    return {
+        "topK": filters.top_k,
+        "includeSameArtist": filters.include_same_artist,
+        "reviewStatus": filters.review_status,
+        "isSfw": filters.is_sfw,
+    }
+
+
+def _relative_image_src(config: AppConfig, destination: Path, processed_path: str) -> str:
+    image_path = Path(processed_path)
+    if not image_path.is_absolute():
+        image_path = config.root_dir / image_path
+    return Path(os.path.relpath(image_path, destination.parent)).as_posix()
+
+
+def _sample_gallery_queries(
+    conn,
+    config: AppConfig,
+    sample_per_artist: int,
+    filters: SearchFilters,
+) -> list[SearchResult]:
+    rows = conn.execute(
+        """
+        SELECT
+            artworks.artwork_id,
+            artworks.artist_id,
+            artists.display_name AS artist_display_name,
+            artworks.processed_path,
+            artworks.review_status,
+            artworks.is_sfw
+          FROM artworks
+          JOIN artists ON artists.artist_id = artworks.artist_id
+          JOIN embeddings ON embeddings.artwork_id = artworks.artwork_id
+         WHERE artworks.validated = 1
+           AND artworks.processed_path IS NOT NULL
+           AND embeddings.model_name_dino = ?
+           AND embeddings.model_version_dino = ?
+           AND embeddings.model_name_clip = ?
+           AND embeddings.model_version_clip = ?
+         ORDER BY artists.display_name, artworks.artwork_id
+        """,
+        (
+            config.models.dino_model_name,
+            config.models.dino_model_version,
+            config.models.clip_model_name,
+            config.models.clip_model_version,
+        ),
+    ).fetchall()
+
+    by_artist = {}
+    for row in rows:
+        if filters.review_status is not None and row["review_status"] != filters.review_status:
+            continue
+        is_sfw = _bool_or_none(row["is_sfw"])
+        if filters.is_sfw is not None and is_sfw != filters.is_sfw:
+            continue
+        by_artist.setdefault(row["artist_id"], []).append(row)
+
+    queries = []
+    for artist_id in sorted(by_artist):
+        for row in by_artist[artist_id][:sample_per_artist]:
+            queries.append(
+                SearchResult(
+                    artwork_id=row["artwork_id"],
+                    artist_id=row["artist_id"],
+                    artist_display_name=row["artist_display_name"],
+                    processed_path=row["processed_path"],
+                    score=1.0,
+                    review_status=row["review_status"],
+                    is_sfw=_bool_or_none(row["is_sfw"]),
+                )
+            )
+    return queries
+
+
+def _render_search_html(
+    *,
+    query_artwork_id: str,
+    mode_payloads: list[dict],
+    filters: SearchFilters,
 ) -> str:
-    result_cards = "\n".join(
-        _render_card(config, destination, result, heading=f"{index}. {result.artist_display_name}")
-        for index, result in enumerate(results, start=1)
+    data_json = _safe_json(
+        {
+            "queryArtworkId": query_artwork_id,
+            "modes": mode_payloads,
+            "filters": _filters_payload(filters),
+        }
     )
     return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>ArtSearch Demo - {escape(query.artwork_id)}</title>
+  <title>ArtSearch Demo - {escape(query_artwork_id)}</title>
   <style>
+    * {{
+      box-sizing: border-box;
+    }}
     body {{
       font-family: system-ui, sans-serif;
       margin: 24px;
       color: #1f2933;
       background: #f7f7f5;
     }}
-    h1, h2 {{
-      margin: 0 0 16px;
+    h1, h2, h3, p {{
+      margin: 0;
+    }}
+    header {{
+      display: grid;
+      gap: 12px;
+      margin-bottom: 22px;
+    }}
+    .modebar {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }}
+    .modebar button {{
+      border: 1px solid #b8beb6;
+      border-radius: 8px;
+      padding: 7px 10px;
+      background: #ffffff;
+      cursor: pointer;
+      font: inherit;
+    }}
+    .modebar button[aria-pressed="true"] {{
+      border-color: #2458a6;
+      color: #123f7c;
+      background: #edf4ff;
     }}
     .query {{
       margin-bottom: 28px;
@@ -114,6 +341,7 @@ def _render_html(
       aspect-ratio: 1;
       object-fit: contain;
       background: #808080;
+      border-radius: 4px;
     }}
     figcaption {{
       margin-top: 8px;
@@ -121,129 +349,84 @@ def _render_html(
       line-height: 1.35;
       overflow-wrap: anywhere;
     }}
-    .score {{
+    .score, .subtle {{
       color: #52606d;
     }}
   </style>
 </head>
 <body>
-  <h1>ArtSearch Baseline Demo</h1>
+  <header>
+    <h1>ArtSearch Search Demo</h1>
+    <p class="subtle">
+      Compare retrieval modes for one query image. MaxSim is experimental local-detail search.
+    </p>
+    <div id="modebar" class="modebar"></div>
+  </header>
   <section class="query">
     <h2>Query</h2>
-    <div class="grid">
-      {_render_card(config, destination, query, heading=query.artist_display_name)}
-    </div>
+    <div id="query" class="grid"></div>
   </section>
   <section>
-    <h2>Top Results</h2>
-    <div class="grid">
-      {result_cards}
-    </div>
+    <h2 id="resultsTitle">Top Results</h2>
+    <div id="results" class="grid"></div>
   </section>
+  <script id="searchData" type="application/json">{data_json}</script>
+  <script>
+    const payload = JSON.parse(document.getElementById("searchData").textContent);
+    const modebar = document.getElementById("modebar");
+    const query = document.getElementById("query");
+    const results = document.getElementById("results");
+    const resultsTitle = document.getElementById("resultsTitle");
+
+    function card(item, rank) {{
+      const score = item.score.toFixed(4);
+      return `
+        <figure>
+          <img src="${{item.imageSrc}}" alt="${{item.artworkId}}">
+          <figcaption>
+            <strong>${{rank ? `${{rank}}. ` : ""}}${{item.artistName}}</strong><br>
+            ${{item.artworkId}}<br>
+            <span class="score">score ${{score}}</span><br>
+            <span class="subtle">${{item.reviewStatus}} · SFW ${{item.isSfw}}</span>
+          </figcaption>
+        </figure>
+      `;
+    }}
+
+    function selectMode(index) {{
+      const entry = payload.modes[index];
+      modebar.querySelectorAll("button").forEach((button, buttonIndex) => {{
+        button.setAttribute("aria-pressed", String(buttonIndex === index));
+      }});
+      query.innerHTML = card(entry.query, null);
+      resultsTitle.textContent = `Top Results · ${{entry.mode.label}}`;
+      results.innerHTML = entry.results.length
+        ? entry.results.map((item, resultIndex) => card(item, resultIndex + 1)).join("")
+        : "<p>No results matched the current filters.</p>";
+    }}
+
+    modebar.innerHTML = payload.modes.map((entry, index) => `
+      <button type="button" data-index="${{index}}" aria-pressed="false">
+        ${{entry.mode.label}}
+      </button>
+    `).join("");
+    modebar.querySelectorAll("button").forEach((button) => {{
+      button.addEventListener("click", () => selectMode(Number(button.dataset.index)));
+    }});
+
+    if (payload.modes.length) {{
+      selectMode(0);
+    }} else {{
+      results.innerHTML = "<p>No retrieval modes were rendered.</p>";
+    }}
+  </script>
 </body>
 </html>
 """
 
 
-def _render_card(
-    config: AppConfig,
-    destination: Path,
-    result: SearchResult,
-    *,
-    heading: str,
-) -> str:
-    image_src = _relative_image_src(config, destination, result.processed_path)
-    return f"""<figure>
-  <img src="{escape(image_src)}" alt="{escape(result.artwork_id)}">
-  <figcaption>
-    <strong>{escape(heading)}</strong><br>
-    {escape(result.artwork_id)}<br>
-    <span class="score">score {result.score:.4f}</span>
-  </figcaption>
-</figure>"""
-
-
-def _relative_image_src(config: AppConfig, destination: Path, processed_path: str) -> str:
-    image_path = Path(processed_path)
-    if not image_path.is_absolute():
-        image_path = config.root_dir / image_path
-    return Path(os.path.relpath(image_path, destination.parent)).as_posix()
-
-
-def _sample_gallery_queries(
-    conn,
-    config: AppConfig,
-    sample_per_artist: int,
-) -> list[SearchResult]:
-    rows = conn.execute(
-        """
-        SELECT
-            artworks.artwork_id,
-            artworks.artist_id,
-            artists.display_name AS artist_display_name,
-            artworks.processed_path
-          FROM artworks
-          JOIN artists ON artists.artist_id = artworks.artist_id
-          JOIN embeddings ON embeddings.artwork_id = artworks.artwork_id
-         WHERE artworks.validated = 1
-           AND artworks.processed_path IS NOT NULL
-           AND embeddings.model_name_dino = ?
-           AND embeddings.model_version_dino = ?
-           AND embeddings.model_name_clip = ?
-           AND embeddings.model_version_clip = ?
-         ORDER BY artists.display_name, artworks.artwork_id
-        """,
-        (
-            config.models.dino_model_name,
-            config.models.dino_model_version,
-            config.models.clip_model_name,
-            config.models.clip_model_version,
-        ),
-    ).fetchall()
-
-    by_artist = {}
-    for row in rows:
-        by_artist.setdefault(row["artist_id"], []).append(row)
-
-    queries = []
-    for artist_id in sorted(by_artist):
-        for row in by_artist[artist_id][:sample_per_artist]:
-            queries.append(
-                SearchResult(
-                    artwork_id=row["artwork_id"],
-                    artist_id=row["artist_id"],
-                    artist_display_name=row["artist_display_name"],
-                    processed_path=row["processed_path"],
-                    score=1.0,
-                )
-            )
-    return queries
-
-
-def _gallery_payload(
-    config: AppConfig,
-    destination: Path,
-    query: SearchResult,
-    results: list[SearchResult],
-) -> dict:
-    return {
-        "query": _gallery_item(config, destination, query),
-        "results": [_gallery_item(config, destination, result) for result in results],
-    }
-
-
-def _gallery_item(config: AppConfig, destination: Path, result: SearchResult) -> dict:
-    return {
-        "artworkId": result.artwork_id,
-        "artistId": result.artist_id,
-        "artistName": result.artist_display_name,
-        "imageSrc": _relative_image_src(config, destination, result.processed_path),
-        "score": result.score,
-    }
-
-
-def _render_gallery_html(payload: list[dict]) -> str:
-    data_json = json.dumps(payload).replace("</", "<\\/")
+def _render_gallery_html(payload: dict) -> str:
+    data_json = _safe_json(payload)
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -363,7 +546,7 @@ def _render_gallery_html(payload: list[dict]) -> str:
       font-size: 14px;
       color: #3f454b;
     }}
-    .score {{
+    .score, .subtle {{
       color: #68707a;
     }}
     @media (max-width: 820px) {{
@@ -383,9 +566,7 @@ def _render_gallery_html(payload: list[dict]) -> str:
 <body>
   <header>
     <h1>ArtSearch Gallery Demo</h1>
-    <p>
-      Choose a query image. Results use DINO pooled-vector similarity with same-artist filtering.
-    </p>
+    <p id="summary"></p>
   </header>
   <main>
     <aside id="queryPanel"></aside>
@@ -396,10 +577,14 @@ def _render_gallery_html(payload: list[dict]) -> str:
   </main>
   <script id="searchData" type="application/json">{data_json}</script>
   <script>
-    const data = JSON.parse(document.getElementById("searchData").textContent);
+    const payload = JSON.parse(document.getElementById("searchData").textContent);
+    const data = payload.queries;
     const queryPanel = document.getElementById("queryPanel");
     const selected = document.getElementById("selected");
     const results = document.getElementById("results");
+    const summary = document.getElementById("summary");
+
+    summary.textContent = `Mode: ${{payload.mode.label}}. Choose a query image.`;
 
     function groupByArtist(items) {{
       return items.reduce((groups, item, index) => {{
@@ -441,7 +626,8 @@ def _render_gallery_html(payload: list[dict]) -> str:
           <figcaption>
             <strong>${{rank}}. ${{item.artistName}}</strong><br>
             ${{item.artworkId}}<br>
-            <span class="score">score ${{score}}</span>
+            <span class="score">score ${{score}}</span><br>
+            <span class="subtle">${{item.reviewStatus}} · SFW ${{item.isSfw}}</span>
           </figcaption>
         </figure>
       `;
@@ -456,13 +642,14 @@ def _render_gallery_html(payload: list[dict]) -> str:
             <h2>Query</h2>
             <div><strong>Artist:</strong> ${{entry.query.artistName}}</div>
             <div><strong>Artwork:</strong> ${{entry.query.artworkId}}</div>
-            <div><strong>Results:</strong> top ${{entry.results.length}} cross-artist matches</div>
+            <div><strong>Mode:</strong> ${{entry.mode.label}}</div>
+            <div><strong>Results:</strong> top ${{entry.results.length}} matches</div>
           </div>
         </div>
       `;
-      results.innerHTML = entry.results
-        .map((item, resultIndex) => card(item, resultIndex + 1))
-        .join("");
+      results.innerHTML = entry.results.length
+        ? entry.results.map((item, resultIndex) => card(item, resultIndex + 1)).join("")
+        : "<p>No results matched the current filters.</p>";
       renderQueries(index);
     }}
 
@@ -470,10 +657,20 @@ def _render_gallery_html(payload: list[dict]) -> str:
       selectQuery(0);
     }} else {{
       selected.innerHTML = `
-        <p>No embedded artworks are available for the configured model versions.</p>
+        <p>No embedded artworks are available for the configured filters and model versions.</p>
       `;
     }}
   </script>
 </body>
 </html>
 """
+
+
+def _safe_json(payload: dict) -> str:
+    return json.dumps(payload).replace("</", "<\\/")
+
+
+def _bool_or_none(value: object) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)

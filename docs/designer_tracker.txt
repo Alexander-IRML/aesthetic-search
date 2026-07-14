@@ -1,0 +1,252 @@
+ARTSEARCH DESIGNER TRACKER
+==========================
+
+This file tracks product and design decisions that affect the ArtSearch user
+experience. It is meant to sit between the technical implementation notes and
+visual/UI design work.
+
+
+ENTRY: RETRIEVAL WORKBENCH ARCHITECTURE
+Date: 2026-07-13
+Status: Partially implemented in the retrieval/demo layer; designed UI pending
+
+
+Core decision
+-------------
+
+ArtSearch should not be designed around one universal "similarity" score.
+Instead, it should be designed as a visual retrieval workbench with multiple
+named search signals.
+
+Different models and scoring methods are expected to be good at different
+aspects of image search. The UI should make those differences visible rather
+than hiding them behind a single blended score too early.
+
+
+Three design concepts
+---------------------
+
+1. Signals
+
+   A signal is a specific scoring method or embedding comparison.
+
+   Expected signals:
+
+   - clip_subject
+     CLIP-based semantic similarity. Best first candidate for subject matter,
+     object-level meaning, and text-aligned concepts.
+
+   - dino_pooled
+     DINOv2 pooled-vector similarity. Best current candidate for global visual
+     similarity: composition, broad visual feel, pose, color, and some style
+     qualities. This should not be described as pure "style" yet.
+
+   - dino_patch_maxsim
+     DINOv2 patch-level MaxSim similarity. Best current candidate for localized
+     structural correspondence: image parts, repeated forms, pose fragments,
+     anatomy-like structures, and spot-the-difference style comparisons.
+
+   - masked_patch_maxsim
+     Future version of patch MaxSim guided by user input or masks. Intended for
+     comparing selected regions instead of the whole image.
+
+
+2. Modes
+
+   A mode is the product-facing way a user chooses how results should be ranked.
+   Modes should map to signals or controlled combinations of signals.
+
+   Likely product labels:
+
+   - Subject
+     Implementation signal: clip_subject.
+
+   - Global Visual
+     Implementation signal: dino_pooled.
+
+   - Local Detail
+     Implementation signal: dino_patch_maxsim.
+
+   - Masked Detail
+     Future implementation signal: masked_patch_maxsim.
+
+   - Compare Modes
+     UI mode that shows multiple ranked lists or score breakdowns side by side.
+
+   Product labels should stay friendly and explanatory. Implementation names can
+   remain precise and technical in code, logs, and diagnostics.
+
+
+3. Benchmarks
+
+   A benchmark is how the project evaluates whether a signal is doing its job.
+   Signals should not all be judged by the same criteria.
+
+   Examples:
+
+   - CLIP should be judged on subject and semantic retrieval quality.
+   - DINO pooled should be judged on broad visual similarity and overall image
+     feel.
+   - DINO patch MaxSim should be judged on localized structural matches, not on
+     global rendering style.
+   - Masked patch MaxSim should eventually be judged on whether it respects the
+     selected region and finds meaningful local correspondences.
+
+   This distinction matters for design. The interface should help the user ask,
+   "Is this mode doing the thing it is supposed to do?" rather than asking every
+   mode to solve every kind of similarity.
+
+
+Result display direction
+------------------------
+
+Retrieval results should eventually support score breakdowns, even when the
+current ranking uses only one signal.
+
+Conceptual result shape:
+
+artwork_id
+rank
+final_score
+mode_used
+scores:
+  clip_subject
+  dino_pooled
+  dino_patch_maxsim
+diagnostics:
+  optional mode-specific explanation data
+
+Design implication:
+
+- A result card can show the active score prominently.
+- A details panel can show secondary scores.
+- A comparison view can show why one mode ranked an image higher than another.
+- Diagnostic overlays can be added later without redesigning the result model.
+
+
+MaxSim positioning
+------------------
+
+DINO patch MaxSim should be exposed as experimental local-detail search, not as
+a replacement for pooled visual search.
+
+Important language:
+
+- Good: "local detail", "local structure", "patch correspondence",
+  "detail matching", "experimental"
+- Avoid: "better style search", "final similarity", "anatomy solved"
+
+Patch MaxSim is spatially agnostic: a query patch can match the best candidate
+patch anywhere in the image. This is useful for finding local structural
+likeness, but it can also match unimportant flat or background regions. The UI
+should leave room for diagnostics and comparison rather than presenting MaxSim
+as automatically superior.
+
+
+Filtering direction
+-------------------
+
+Retrieval controls should be centralized and shared across modes where possible.
+
+Initial filters:
+
+- top_k
+- include/exclude same artist
+- retrieval mode
+- review status
+- is_sfw
+
+The is_sfw filter should be treated as a privacy/safety control, not merely a
+convenience filter. Public demos or exported views should default toward safe,
+approved, or placeholder imagery unless the project owner explicitly chooses
+otherwise.
+
+
+Blending decision
+-----------------
+
+Do not blend retrieval signals yet.
+
+Blending should wait until the project has human judgments or evaluation data.
+Until then, separate modes are more valuable because they show what each signal
+actually contributes.
+
+Future blended modes are allowed, but they should be presented as deliberate
+ranking recipes, not as the only source of truth.
+
+
+Diagnostics decision
+--------------------
+
+Diagnostics should be considered part of the product, not just developer-only
+debug output.
+
+For patch MaxSim, useful diagnostics may include:
+
+- top matching query patches
+- candidate patch indices that produced the max scores
+- optional image overlays showing which regions drove the match
+- score summaries that distinguish broad agreement from isolated patch matches
+
+Design implication:
+
+The future comparison view should reserve space for explanation controls such as
+"show matching patches" or "why this result?"
+
+
+Near-term UI impact
+-------------------
+
+The next search UI should expose retrieval mode clearly.
+
+Implementation note:
+
+The retrieval layer now exposes CLIP subject, DINO pooled, and DINO patch MaxSim
+as named modes. The static search demo can compare modes for one query, and the
+gallery demo can be generated for a selected mode. A real designed UI is still
+needed.
+
+Suggested first controls:
+
+- Mode selector:
+  - Subject
+  - Global Visual
+  - Local Detail (experimental)
+
+- Toggle or checkbox:
+  - include same artist
+  - SFW only
+
+- Top-k selector:
+  - 10
+  - 25
+  - 50
+
+- Optional result details:
+  - active score
+  - secondary scores
+  - artist/source metadata if available
+  - review status
+
+
+What this means for the overall vision
+--------------------------------------
+
+The product direction is not "make a prettier nearest-neighbor gallery."
+
+The direction is:
+
+Build an evaluation environment for visual retrieval where multiple similarity
+signals can be compared, diagnosed, and improved over time.
+
+This supports the long-term goal of distinct benchmarks for different search
+aspects:
+
+- subject matter
+- global style and visual feel
+- localized detail and structure
+- user-selected/masked regions
+- duplicate and variant review
+
+The design should make these distinctions understandable without overwhelming
+the user.

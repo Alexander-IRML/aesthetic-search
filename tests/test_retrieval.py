@@ -13,8 +13,14 @@ from artsearch.ingest.config import (
     RetrievalConfig,
 )
 from artsearch.ingest.db import connect, init_db, insert_artwork
+from artsearch.retrieval.diagnostics import patch_maxsim_diagnostics
 from artsearch.retrieval.demo import write_gallery_demo, write_search_demo
-from artsearch.retrieval.search import search_similar
+from artsearch.retrieval.search import (
+    RetrievalMode,
+    SearchFilters,
+    patch_maxsim_score,
+    search_similar,
+)
 
 
 def _config(tmp_path: Path) -> AppConfig:
@@ -78,6 +84,186 @@ def test_search_filters_same_artist_before_truncating(tmp_path):
     assert [result.artwork_id for result in results] == ["other_artist_match"]
 
 
+def test_search_can_rank_by_clip_subject_mode(tmp_path):
+    config = _config(tmp_path)
+    conn = connect(config.database_path)
+    init_db(conn)
+    _insert_artwork_with_embedding(
+        conn,
+        config,
+        artwork_id="query",
+        artist_id="artist_a",
+        clip_vector=np.array([1.0, 0.0], dtype=np.float32),
+        dino_pooled=np.array([0.0, 1.0], dtype=np.float32),
+    )
+    _insert_artwork_with_embedding(
+        conn,
+        config,
+        artwork_id="clip_match",
+        artist_id="artist_b",
+        clip_vector=np.array([0.95, 0.05], dtype=np.float32),
+        dino_pooled=np.array([0.0, 1.0], dtype=np.float32),
+    )
+    _insert_artwork_with_embedding(
+        conn,
+        config,
+        artwork_id="pooled_match",
+        artist_id="artist_c",
+        clip_vector=np.array([0.0, 1.0], dtype=np.float32),
+        dino_pooled=np.array([0.0, 0.99], dtype=np.float32),
+    )
+
+    results = search_similar(
+        conn,
+        config,
+        "query",
+        top_k=1,
+        mode=RetrievalMode.CLIP_SUBJECT,
+    )
+
+    assert [result.artwork_id for result in results] == ["clip_match"]
+    assert results[0].mode == RetrievalMode.CLIP_SUBJECT
+
+
+def test_patch_maxsim_is_spatially_agnostic(tmp_path):
+    config = _config(tmp_path)
+    conn = connect(config.database_path)
+    init_db(conn)
+    query_patches = np.array(
+        [[1.0, 0.0], [0.0, 1.0], [1.0, 0.0], [0.0, 1.0]],
+        dtype=np.float32,
+    )
+    rearranged_match = np.array(
+        [[0.0, 1.0], [1.0, 0.0], [0.0, 1.0], [1.0, 0.0]],
+        dtype=np.float32,
+    )
+    partial_match = np.array(
+        [[1.0, 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0]],
+        dtype=np.float32,
+    )
+    _insert_artwork_with_embedding(
+        conn,
+        config,
+        artwork_id="query",
+        artist_id="artist_a",
+        dino_patches=query_patches,
+    )
+    _insert_artwork_with_embedding(
+        conn,
+        config,
+        artwork_id="rearranged_match",
+        artist_id="artist_b",
+        dino_patches=rearranged_match,
+    )
+    _insert_artwork_with_embedding(
+        conn,
+        config,
+        artwork_id="partial_match",
+        artist_id="artist_c",
+        dino_patches=partial_match,
+    )
+
+    assert patch_maxsim_score(query_patches, rearranged_match) == 1.0
+    assert patch_maxsim_score(query_patches, partial_match) == 0.5
+
+    results = search_similar(
+        conn,
+        config,
+        "query",
+        top_k=2,
+        mode=RetrievalMode.DINO_PATCH_MAXSIM,
+    )
+
+    assert [result.artwork_id for result in results] == ["rearranged_match", "partial_match"]
+    assert results[0].score == 1.0
+
+
+def test_search_filters_review_status_and_sfw_candidates(tmp_path):
+    config = _config(tmp_path)
+    conn = connect(config.database_path)
+    init_db(conn)
+    _insert_artwork_with_embedding(
+        conn,
+        config,
+        artwork_id="query",
+        artist_id="artist_a",
+        vector=np.array([1.0, 0.0], dtype=np.float32),
+    )
+    _insert_artwork_with_embedding(
+        conn,
+        config,
+        artwork_id="unsafe_match",
+        artist_id="artist_b",
+        vector=np.array([0.99, 0.01], dtype=np.float32),
+        is_sfw=False,
+        review_status="confirmed_unique",
+    )
+    _insert_artwork_with_embedding(
+        conn,
+        config,
+        artwork_id="safe_variant",
+        artist_id="artist_c",
+        vector=np.array([0.9, 0.1], dtype=np.float32),
+        is_sfw=True,
+        review_status="confirmed_variant",
+    )
+
+    results = search_similar(
+        conn,
+        config,
+        "query",
+        filters=SearchFilters(
+            top_k=5,
+            is_sfw=True,
+            review_status="confirmed_variant",
+        ),
+    )
+
+    assert [result.artwork_id for result in results] == ["safe_variant"]
+    assert results[0].is_sfw is True
+    assert results[0].review_status == "confirmed_variant"
+
+
+def test_patch_diagnostics_reports_best_patch_matches(tmp_path):
+    config = _config(tmp_path)
+    conn = connect(config.database_path)
+    init_db(conn)
+    _insert_artwork_with_embedding(
+        conn,
+        config,
+        artwork_id="query",
+        artist_id="artist_a",
+        dino_patches=np.array(
+            [[1.0, 0.0], [0.0, 1.0], [0.6, 0.8], [1.0, 0.0]],
+            dtype=np.float32,
+        ),
+    )
+    _insert_artwork_with_embedding(
+        conn,
+        config,
+        artwork_id="candidate",
+        artist_id="artist_b",
+        dino_patches=np.array(
+            [[0.0, 1.0], [1.0, 0.0], [0.6, 0.8], [1.0, 0.0]],
+            dtype=np.float32,
+        ),
+    )
+
+    matches = patch_maxsim_diagnostics(
+        conn,
+        config,
+        "query",
+        "candidate",
+        top_n=2,
+    )
+
+    assert len(matches) == 2
+    assert matches[0].score == 1.0
+    assert matches[0].candidate_patch_index in {1, 2, 3}
+    assert matches[0].query_row in {0, 1}
+    assert matches[0].query_col in {0, 1}
+
+
 def test_search_demo_writes_html_with_relative_image_links(tmp_path, monkeypatch):
     config = _config(tmp_path)
     conn = connect(config.database_path)
@@ -101,7 +287,9 @@ def test_search_demo_writes_html_with_relative_image_links(tmp_path, monkeypatch
     output_path = write_search_demo("query", config_path="unused.yaml")
 
     html = output_path.read_text(encoding="utf-8")
-    assert "ArtSearch Baseline Demo" in html
+    assert "ArtSearch Search Demo" in html
+    assert "CLIP subject" in html
+    assert "DINO patch MaxSim" in html
     assert "processed/artist_a/query.jpg" in html
     assert "processed/artist_b/result.jpg" in html
 
@@ -145,7 +333,12 @@ def _insert_artwork_with_embedding(
     *,
     artwork_id: str,
     artist_id: str,
-    vector: np.ndarray,
+    vector: np.ndarray | None = None,
+    clip_vector: np.ndarray | None = None,
+    dino_pooled: np.ndarray | None = None,
+    dino_patches: np.ndarray | None = None,
+    is_sfw: bool = True,
+    review_status: str = "unreviewed",
 ) -> None:
     processed_path = config.processed_dir / artist_id / f"{artwork_id}.jpg"
     processed_path.parent.mkdir(parents=True, exist_ok=True)
@@ -166,17 +359,30 @@ def _insert_artwork_with_embedding(
             "raw_path": f"raw/{artist_id}/{artwork_id}.jpg",
             "processed_path": f"processed/{artist_id}/{artwork_id}.jpg",
             "validated": 1,
+            "is_sfw": int(is_sfw),
+            "review_status": review_status,
         },
     )
+    pooled = dino_pooled if dino_pooled is not None else vector
+    if pooled is None:
+        pooled = np.array([1.0, 0.0], dtype=np.float32)
     upsert_embedding(
         conn,
         artwork_id,
         ImageEmbeddings(
-            clip_vector=np.array([1.0, 0.0], dtype=np.float32),
-            dino_pooled=vector,
-            dino_patches=np.array(
-                [[1.0, 0.0], [0.0, 1.0], [1.0, 0.0], [0.0, 1.0]],
-                dtype=np.float32,
+            clip_vector=(
+                clip_vector
+                if clip_vector is not None
+                else np.array([1.0, 0.0], dtype=np.float32)
+            ),
+            dino_pooled=pooled,
+            dino_patches=(
+                dino_patches
+                if dino_patches is not None
+                else np.array(
+                    [[1.0, 0.0], [0.0, 1.0], [1.0, 0.0], [0.0, 1.0]],
+                    dtype=np.float32,
+                )
             ),
             dino_patch_grid_size=2,
         ),

@@ -1,0 +1,214 @@
+ARTSEARCH DESIGNER BRIEF
+========================
+
+Project summary
+---------------
+
+ArtSearch is a local-first visual search tool for artwork collections. The
+system ingests a private image corpus, standardizes images, generates visual
+embeddings, and lets the user inspect similar-image matches. The long-term idea
+is to help someone explore a large art collection by visual likeness: subject,
+composition, style, pose, color, and other image-level signals.
+
+This is not a public social platform and not a generic image gallery. The core
+experience is closer to a research/evaluation tool: the user selects an image,
+compares the top matches, judges whether the retrieval feels right, and uses
+that feedback to improve the search system.
+
+
+Current product state
+---------------------
+
+The backend MVP already exists. It can:
+
+- Register artist folders from a local manifest.
+- Standardize raw images into 448x448 processed JPEGs.
+- Track metadata, validation state, duplicate state, and run logs in SQLite.
+- Generate CLIP and DINOv2 embeddings.
+- Run named retrieval modes for CLIP subject similarity, DINOv2 pooled global
+  visual similarity, and DINOv2 patch MaxSim local-detail similarity.
+- Generate a local static HTML gallery for evaluating search results.
+
+The current UI is functional but intentionally simple. It shows sampled query
+images and top-k similar results, but it is not yet a designed application.
+
+
+Primary user
+------------
+
+The first user is the project owner/operator: someone building and evaluating a
+private visual search system. They need to inspect search behavior quickly,
+notice where the model succeeds or fails, and build confidence in retrieval
+quality over time.
+
+Secondary future users could include artists, collectors, researchers, or
+curators who want to organize and explore a large visual archive. For now,
+design should prioritize the single-user local workflow rather than multi-user
+sharing, publishing, or social features.
+
+
+Design goal
+-----------
+
+Design the first real interactive application view for evaluating visual search
+quality.
+
+The most important moment is:
+
+1. I choose or inspect a query image.
+2. I see the top similar results.
+3. I can quickly judge whether the results match subject, style, or composition.
+4. I can understand why a result may have ranked highly.
+5. I can move to another query without friction.
+
+The interface should make visual comparison feel fast, calm, and analytical.
+This is not meant to feel like a flashy consumer feed. It should feel like a
+well-made creative/research workstation.
+
+
+Suggested MVP screens
+---------------------
+
+1. Search evaluation gallery
+
+   Purpose:
+   Let the user browse query images and inspect top-k similarity results.
+
+   Important elements:
+   - Left rail or top strip of query thumbnails.
+   - Large selected query image.
+   - Grid of retrieved results.
+   - Similarity score display.
+   - Artist/source metadata when available.
+- Retrieval mode indicator, such as "DINO pooled" or "DINO patch MaxSim".
+   - Empty/loading/error states.
+
+
+2. Result comparison view
+
+   Purpose:
+   Let the user compare one result against the query in more detail.
+
+   Important elements:
+   - Query image and selected result side by side.
+   - Score and rank.
+   - Basic metadata.
+   - Notes or flags for "good match", "bad match", "same subject", "same
+     style", "variant", or "duplicate" as future controls.
+
+
+3. Duplicate/review queue
+
+   Purpose:
+   Support the existing duplicate-review metadata in the database.
+
+   Important elements:
+   - Candidate pair or group.
+   - Exact/near-duplicate explanation.
+   - Review decisions:
+     - confirmed unique
+     - confirmed duplicate
+     - confirmed variant
+   - Canonical artwork selector when marking duplicates.
+
+
+Interaction priorities
+----------------------
+
+- Fast scanning matters more than decorative density.
+- Images should be large enough to compare, not tiny cards with oversized text.
+- Score and metadata should be visible but visually secondary to the images.
+- The selected query should remain anchored while results change.
+- Same-query navigation should be quick: keyboard arrows or thumbnail clicks.
+- Filters should be practical:
+  - include/exclude same artist
+  - retrieval mode
+  - top-k count
+  - review status
+- The UI should tolerate incomplete metadata.
+
+
+Visual direction
+----------------
+
+The product should feel clear, focused, and trustworthy. A restrained visual
+system is better than a highly branded one at this stage.
+
+Recommended direction:
+
+- Neutral background.
+- Dense but breathable layout.
+- Image-first hierarchy.
+- Subtle borders and spacing.
+- Small, legible metadata.
+- Calm accent color for selected states.
+- Avoid oversized marketing-style hero sections.
+- Avoid decorative gradients, abstract art, or visual effects that compete with
+  the artwork being evaluated.
+
+The art itself is the visual content. The interface should frame it, not fight
+it.
+
+
+Privacy constraints
+-------------------
+
+The corpus is private and may contain sensitive material. Design work should not
+use real local images unless the project owner explicitly provides approved
+examples.
+
+Important constraints:
+
+- Do not include real corpus images in public mockups.
+- Do not include private artist names, folder names, file names, or source URLs.
+- Use neutral placeholder artwork or synthetic mock images for public-facing
+  design artifacts.
+- Assume generated demo HTML and processed images are local-only artifacts.
+- Treat the app as local-first unless a future deployment plan explicitly
+  changes that.
+
+
+What the designer does not need to solve yet
+--------------------------------------------
+
+The designer does not need to design:
+
+- A public landing page.
+- User accounts.
+- Social sharing.
+- Marketplace features.
+- Cloud deployment flows.
+- Full mobile parity.
+
+The near-term value is in making the local evaluation workflow excellent.
+
+
+Open product questions
+----------------------
+
+- Should the primary browsing model be query-first, artist-first, or cluster-first?
+- How should the UI explain different retrieval modes, such as DINO, CLIP, and
+  blended search?
+- What user feedback should be captured during evaluation?
+- Should result judgments become training/evaluation data later?
+- How much metadata should be visible by default versus tucked into a details
+  panel?
+- What is the right design language for a tool that is both creative and
+  technical?
+
+
+Near-term design deliverable
+----------------------------
+
+The most useful first design artifact would be a desktop mockup of the search
+evaluation gallery:
+
+- query browser
+- selected query panel
+- top results grid
+- similarity scores
+- retrieval mode controls
+- privacy-safe placeholder imagery
+
+That design can become the blueprint for replacing the current static HTML demo
+with a real local interface.
