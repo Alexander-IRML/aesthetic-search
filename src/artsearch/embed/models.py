@@ -16,6 +16,11 @@ class EmbeddingProvider(Protocol):
         """Return one embedding payload per image path, preserving input order."""
 
 
+class TextEmbeddingProvider(Protocol):
+    def embed_texts(self, texts: Sequence[str]) -> np.ndarray:
+        """Return normalized CLIP text vectors, preserving input order."""
+
+
 class HuggingFaceEmbeddingProvider:
     def __init__(self, config: AppConfig) -> None:
         try:
@@ -63,6 +68,25 @@ class HuggingFaceEmbeddingProvider:
             )
             for index in range(len(images))
         ]
+
+    def embed_texts(self, texts: Sequence[str]) -> np.ndarray:
+        if not texts:
+            projection_dim = int(getattr(self.clip_model.config, "projection_dim", 0))
+            return np.empty((0, projection_dim), dtype=np.float32)
+        inputs = self.clip_processor(
+            text=list(texts),
+            padding=True,
+            truncation=True,
+            return_tensors="pt",
+        )
+        inputs = _to_device(inputs, self.device)
+        with self._torch.no_grad():
+            features = self.clip_model.get_text_features(**inputs)
+        vectors = features.detach().cpu().float().numpy().astype(np.float32)
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        if np.any(norms == 0):
+            raise RuntimeError("CLIP produced a zero-length text embedding")
+        return vectors / norms
 
     def _embed_clip(self, images: Sequence[Image.Image]) -> np.ndarray:
         inputs = self.clip_processor(images=list(images), return_tensors="pt")

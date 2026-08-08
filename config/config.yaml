@@ -16,9 +16,9 @@ duplicates:
 
 models:
   clip_model_name: openai/clip-vit-base-patch32
-  clip_model_version: main
+  clip_model_version: 3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268
   dino_model_name: facebook/dinov2-with-registers-base
-  dino_model_version: main
+  dino_model_version: a1d738ccfa7ae170945f210395d99dde8adb1805
 
 embeddings:
   batch_size: 4
@@ -26,5 +26,8 @@ embeddings:
 
 retrieval:
   default_top_k: 12
+  shortlist_size: 100
+  patch_match_top_n: 1
+  review_session_count: 3
   demo_output: data/search_demo.html
   gallery_output: data/search_gallery.html

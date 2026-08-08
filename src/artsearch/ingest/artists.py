@@ -65,9 +65,6 @@ def register_artist(conn: sqlite3.Connection, artist: ArtistRecord) -> None:
             artist.notes,
         ),
     )
-    conn.commit()
-
-
 def register_artists(conn: sqlite3.Connection, artists: list[ArtistRecord]) -> int:
     for artist in artists:
         register_artist(conn, artist)

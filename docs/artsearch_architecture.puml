@@ -1,0 +1,505 @@
+' ArtSearch architecture as implemented through 2026-08-02.
+' Render all diagrams with:
+'   plantuml docs/artsearch_architecture.puml
+'
+' The file intentionally uses only built-in PlantUML elements and has no
+' network-loaded themes or includes.
+
+@startuml ArtSearch_Application_Architecture
+title ArtSearch Application Architecture
+
+left to right direction
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam linetype ortho
+skinparam componentStyle rectangle
+skinparam defaultFontName SansSerif
+skinparam packageStyle rectangle
+skinparam ArrowColor #4B5563
+skinparam componentBorderColor #374151
+skinparam packageBorderColor #6B7280
+skinparam databaseBorderColor #374151
+skinparam folderBorderColor #374151
+
+actor "Local operator / reviewer" as Operator
+cloud "Bluesky public AppView\n(no credentials)" as BlueskyAPI #DCEEFF
+cloud "Hugging Face Hub\n(runtime model source)" as HuggingFace #DCEEFF
+
+package "Command-line surfaces" #F4F5F7 {
+  component "Manual ingest CLI\ninit-db / register-artists / standardize" as IngestCLI #E8F2FF
+  component "Bluesky collector CLI\ncollect-author / collect-authors" as BlueskyCLI #E8F2FF
+  component "Integrated Bluesky pipeline CLI\nrun-author / run-authors / process-jsonl" as PipelineCLI #E8F2FF
+  component "Corpus rebuild CLI\nSigLIP seed -> CLIP / DINO / gallery" as RebuildCLI #E8F2FF
+  component "Artwork-filter CLI\nclassify / review / evaluate / calibrate" as FilterCLI #E8F2FF
+  component "Embedding CLI" as EmbedCLI #E8F2FF
+  component "Retrieval and demo CLIs\nsearch / gallery / diagnostics" as RetrievalCLI #E8F2FF
+}
+
+package "Collection and ingestion" #F8FAFC {
+  component "Manual corpus ingestion\nartsearch.ingest" as ManualIngest #E8F7EE
+  component "Bluesky collector\nartsearch.bluesky" as BlueskyCollector #E8F7EE
+  component "Public-safe roster audit\nlabels + caption/alt composition signals" as RosterAudit #E8F7EE
+  component "Integration orchestrator\nBlueskyArtworkPipeline" as Orchestrator #E8F7EE
+  component "CorpusRouter\nACCEPT / REVIEW materialization" as Router #E8F7EE
+  component "ArtworkFilterCorpusStore\naudit + accepted-row upsert" as CorpusStore #E8F7EE
+  component "SigLIP corpus selector\ncurrent CID + artwork-like classes" as CorpusSelector #E8F7EE
+}
+
+package "Artwork-content triage" #F8FAFC {
+  component "ArtworkFilterService\nbounded load + ordered batches" as FilterService #FFF4D6
+  component "HTTP/local image loader\nlimits, decode, EXIF transpose, RGB" as ImageLoader #FFF4D6
+  component "Deterministic rules\nmedia + provenance" as Rules #FFF4D6
+  component "Text signals\npost text + alt text" as TextSignals #FFF4D6
+  component "SigLIP 2 zero-shot classifier\nversioned multi-class prompt bank" as ZeroShot #FFF4D6
+  component "DecisionEngine\nACCEPT / REVIEW / REJECT / ERROR" as DecisionEngine #FFF4D6
+}
+
+package "Review and model evaluation" #F8FAFC {
+  component "Bluesky corpus gallery\nfilters + decision evidence" as BlueskyGallery #F3E8FF
+  component "Review queue exporter\nboundary-prioritized CSV" as ReviewExport #F3E8FF
+  component "Append-only label importer\nexact-repeat suppression" as LabelImport #F3E8FF
+  component "Evaluation + calibration\nexact decision replay, metrics, sweeps" as Evaluation #F3E8FF
+  component "Real-model smoke test\nfinite + batch/single checks" as SmokeTest #F3E8FF
+}
+
+package "Embedding and retrieval" #F8FAFC {
+  component "Embedding pipeline\nvalidated processed artwork batches" as EmbedPipeline #FDECEC
+  component "CLIP + DINOv2 provider\nsubject, pooled, patch features" as EmbeddingModels #FDECEC
+  component "Two-stage retrieval ensemble\nDINO pooled shortlist -> patch rerank" as Retrieval #FDECEC
+  component "Parallel semantic lens\nCLIP score + rank evidence" as SemanticLens #FDECEC
+  component "Exploration direction math\nmean delta / shift / orthogonalize" as Directions #FDECEC
+  component "Retrieval workbench\nbrowse + human relevance evaluation" as Demo #FDECEC
+  component "Retrieval evaluator\nP@K / MRR / MAP / nDCG" as RetrievalEvaluation #FDECEC
+}
+
+package "Versioned configuration" #F4F5F7 {
+  artifact "config/config.yaml\npaths, image transforms, retrieval models" as AppConfig
+  artifact "config/artists.yaml\nlocal manifest variant is ignored" as ArtistConfig
+  artifact "config/bluesky_safe_pilot.local.txt\nmetadata-audited local roster" as SafePilotConfig
+  artifact "configs/bluesky.default.toml" as BlueskyConfig
+  artifact "configs/artwork_filter.default.toml" as FilterConfig
+  artifact "configs/artwork_filter.prompts.v1.toml" as PromptConfig
+}
+
+package "Local private data boundary (Git-ignored)" #FFF8E7 {
+  folder "data/raw/\nmanual + routed accepted originals" as RawFiles
+  folder "data/processed/\ncanonical 448 x 448 JPEGs" as ProcessedFiles
+  folder "data/filter/review_images/" as ReviewImages
+  file "data/bluesky/*.jsonl\nImageCandidate audit stream" as CandidateJSONL
+  file "data/bluesky/collection_checkpoints.jsonl\ncompleted actor/settings keys" as CheckpointJSONL
+  file "data/filter/decisions*.jsonl\nFilterResult audit stream" as DecisionJSONL
+  folder "data/cache/artwork_filter/\nimage + prompt embedding cache" as FeatureCache
+  folder "data/corpus_archive/<timestamp>/\nprior active DB + raw + processed" as CorpusArchive
+  file "data/filter/review/*.csv\ndata/filter/labels/*.jsonl\ndata/filter/reports/*" as ReviewArtifacts
+  file "data/retrieval/judgments*.jsonl\ndata/retrieval/evaluation*.json" as RetrievalArtifacts
+  database "data/artsearch.db\nSQLite metadata + vectors" as SQLite
+  file "data/search_*.html\nlocal result galleries" as HTMLFiles
+}
+
+Operator --> IngestCLI
+Operator --> BlueskyCLI
+Operator --> PipelineCLI
+Operator --> RebuildCLI
+Operator --> FilterCLI
+Operator --> EmbedCLI
+Operator --> RetrievalCLI
+Operator --> ReviewArtifacts : annotates CSV
+HTMLFiles --> Operator : viewed locally
+
+IngestCLI --> ManualIngest
+ManualIngest --> RawFiles : scans
+ManualIngest --> ProcessedFiles : standardizes
+ManualIngest --> SQLite : artists, artworks, runs, events
+ArtistConfig ..> ManualIngest
+
+BlueskyCLI --> BlueskyCollector
+BlueskyCLI --> RosterAudit
+PipelineCLI --> Orchestrator
+BlueskyCollector --> BlueskyAPI : paged author-feed reads
+RosterAudit --> BlueskyAPI : metadata-only feed reads
+RosterAudit --> SafePilotConfig : local safe-pilot roster
+SafePilotConfig ..> BlueskyCollector
+BlueskyCollector --> CandidateJSONL : append/replace candidates
+BlueskyCollector --> CheckpointJSONL : successful actors
+BlueskyCollector --> Orchestrator : ImageCandidate stream
+CandidateJSONL --> Orchestrator : process-jsonl
+Orchestrator --> FilterService : classify_many
+Orchestrator --> Router : route_many
+Orchestrator --> CorpusStore : persist_batch
+Orchestrator --> CheckpointJSONL : successful actors
+RebuildCLI --> CorpusSelector
+CandidateJSONL --> CorpusSelector : latest candidate version
+DecisionJSONL --> CorpusSelector : matching SigLIP evidence
+CorpusSelector --> Router : explicit promoted ACCEPT rows
+CorpusSelector --> CorpusStore : seed evidence
+SQLite --> CorpusArchive : archived before replacement
+RawFiles --> CorpusArchive : archived before replacement
+ProcessedFiles --> CorpusArchive : archived before replacement
+
+FilterCLI --> FilterService
+FilterCLI --> ReviewExport
+FilterCLI --> LabelImport
+FilterCLI --> Evaluation
+FilterCLI --> SmokeTest
+FilterService --> ImageLoader
+FilterService --> Rules
+FilterService --> TextSignals
+FilterService --> ZeroShot
+FilterService --> DecisionEngine
+ImageLoader --> BlueskyAPI : thumbnail/full-size image read
+ZeroShot --> FeatureCache : validated atomic NumPy cache
+ZeroShot --> HuggingFace : lazy checkpoint acquisition
+PromptConfig ..> ZeroShot
+FilterConfig ..> FilterService
+FilterService --> DecisionJSONL : append-only evidence
+SmokeTest --> ZeroShot
+
+Router --> ImageLoader : full-size load for ACCEPT/REVIEW
+Router --> RawFiles : ACCEPT, metadata-stripped JPEG
+Router --> ReviewImages : optional REVIEW isolation
+CorpusStore --> ProcessedFiles : standardizes accepted artwork
+CorpusStore --> SQLite : decisions, routes, artists, artworks
+
+CandidateJSONL --> ReviewExport
+DecisionJSONL --> ReviewExport
+ReviewExport --> ReviewArtifacts
+ReviewArtifacts --> LabelImport
+LabelImport --> ReviewArtifacts : append-only labels
+CandidateJSONL --> Evaluation
+DecisionJSONL --> Evaluation
+ReviewArtifacts --> Evaluation
+Evaluation --> ReviewArtifacts : JSON metrics + threshold CSV
+
+EmbedCLI --> EmbedPipeline
+RebuildCLI --> EmbedPipeline : after corpus seed
+AppConfig ..> ManualIngest
+AppConfig ..> CorpusStore
+AppConfig ..> EmbedPipeline
+AppConfig ..> Retrieval
+BlueskyConfig ..> BlueskyCollector
+EmbedPipeline --> ProcessedFiles : reads validated images
+EmbedPipeline --> SQLite : reads artworks; upserts embeddings
+EmbedPipeline --> EmbeddingModels
+EmbeddingModels --> HuggingFace : lazy CLIP/DINO checkpoints
+
+RetrievalCLI --> Retrieval
+RetrievalCLI --> BlueskyGallery : open-gallery --source bluesky
+Retrieval --> SQLite : Stage 1 global vectors\nStage 2 shortlisted patches only
+Retrieval --> SemanticLens : CLIP evidence only\ndoes not alter final order
+Directions --> SemanticLens : subject + named-medium axes
+Directions --> Retrieval : optional unnameable pooled facets
+Retrieval --> Demo
+Demo --> ProcessedFiles : local image references
+Demo --> HTMLFiles
+Operator --> Demo : yes/no relevance judgments
+Demo --> RetrievalArtifacts : JSONL export
+RetrievalArtifacts --> RetrievalEvaluation
+RebuildCLI --> Demo : ensemble gallery,\nsame-artist enabled
+CandidateJSONL --> BlueskyGallery
+DecisionJSONL --> BlueskyGallery
+BlueskyGallery --> BlueskyAPI : browser loads CDN images
+BlueskyGallery --> HTMLFiles
+
+note bottom of SQLite
+  Tables:
+  artists, artworks, embeddings,
+  runs, run_events,
+  artwork_filter_decisions,
+  artwork_filter_routes
+end note
+
+note bottom of ReviewArtifacts
+  May contain private source text, URLs, labels,
+  and evaluation results. It remains local and ignored.
+end note
+
+legend right
+  |= Color |= Responsibility |
+  |<#E8F2FF> | CLI entry points |
+  |<#E8F7EE> | Collection and corpus ingestion |
+  |<#FFF4D6> | Artwork classification |
+  |<#F3E8FF> | Human review and calibration |
+  |<#FDECEC> | Retrieval embeddings and search |
+  |<#FFF8E7> | Local private/generated storage |
+endlegend
+
+@enduml
+
+
+@startuml ArtSearch_Bluesky_Pipeline_Sequence
+title ArtSearch Bluesky Collection-to-Corpus Sequence
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam sequenceArrowThickness 1
+skinparam responseMessageBelowArrow true
+autonumber
+
+actor Operator
+participant "artsearch-bluesky-pipeline" as CLI
+participant "BlueskyArtworkPipeline" as Pipeline
+participant "BlueskyClient" as Client
+participant "Public AppView" as AppView
+database "Candidate JSONL" as Candidates
+participant "ArtworkFilterService" as Filter
+participant "Image loader" as Loader
+participant "Rules + text signals" as Signals
+database "Feature cache" as Cache
+participant "SigLIP 2 + prompt bank" as SigLIP
+database "Decision JSONL" as Decisions
+participant "CorpusRouter" as Router
+collections "Accepted / review files" as Files
+participant "ArtworkFilterCorpusStore" as Store
+database "SQLite" as DB
+
+Operator -> CLI : run-author / run-authors
+CLI -> Pipeline : process_stream(candidate iterator)
+
+loop each actor and author-feed page
+  Pipeline -> Client : get_author_feed(actor, cursor)
+  Client -> AppView : GET app.bsky.feed.getAuthorFeed
+  AppView --> Client : feed items + next cursor
+  Client --> Pipeline : feed page
+
+  loop each image view
+    Pipeline -> Pipeline : apply public-safe Bluesky labels\nand adult-text exclusions
+    alt blocked moderation signal
+      Pipeline -> Pipeline : omit before candidate creation
+    else allowed image
+      Pipeline -> Pipeline : convert to ImageCandidate\n(DID, AT URI, URLs, text, labels, provenance)
+      Pipeline -> Candidates : append candidate
+    end
+  end
+
+  Pipeline -> Filter : classify_many(batch)
+  Filter -> Loader : load preferred thumbnail\nwith byte/pixel/media limits
+  Loader --> Filter : LoadedImage or typed error
+  Filter -> Signals : deterministic media/provenance rules\nand text/alt-text scoring
+
+  alt invalid media or permanent load failure
+    Filter -> Filter : structured REJECT or ERROR
+  else FORCE_REJECT rule
+    Filter -> Filter : skip model inference
+  else model-eligible candidate
+    Filter -> Cache : get image embedding key
+    alt cache miss
+      Filter -> SigLIP : encode image batch
+      SigLIP --> Filter : normalized embeddings
+      Filter -> Cache : atomic vector + metadata write
+    else cache hit
+      Cache --> Filter : validated embedding
+    end
+    Filter -> SigLIP : score against cached versioned prompts
+    SigLIP --> Filter : all class scores + utility/margin
+    Filter -> Filter : DecisionEngine fusion and policy
+  end
+
+  Filter -> Decisions : append FilterResult evidence
+  Filter --> Pipeline : ordered ACCEPT/REVIEW/REJECT/ERROR results
+  Pipeline -> Router : route_many(candidates, results)
+
+  alt ACCEPT
+    Router -> Loader : load full-size image
+    Router -> Files : re-encode without EXIF into accepted raw area
+  else REVIEW and review download enabled
+    Router -> Loader : load full-size image
+    Router -> Files : isolate in review area
+  else REJECT or ERROR
+    Router -> Router : retain evidence; write no image bytes
+  end
+
+  Router --> Pipeline : RoutedImage outcomes
+  Pipeline -> Store : persist_batch(candidates, results, routes)
+  Store -> DB : append immutable decision + route audit rows
+  alt accepted file stored
+    Store -> Files : standardize to canonical processed JPEG
+    Store -> DB : upsert artist + accepted artwork row
+  else review stored
+    Store -> DB : retain review route only
+  end
+end
+
+Pipeline --> CLI : PipelineSummary counts
+CLI --> Operator : JSON summary
+
+note over Filter,SigLIP
+  Automatic ACCEPT is disabled in the checked-in config
+  until thresholds are validated and explicitly enabled.
+  Deterministic-only mode never silently ACCEPTs.
+  Model failures become ERROR, not REJECT.
+end note
+
+note over Router,DB
+  Classification does not establish attribution,
+  copyright permission, safety, or opt-out status.
+end note
+
+@enduml
+
+
+@startuml ArtSearch_SigLIP_To_Retrieval_Rebuild
+title ArtSearch SigLIP-to-Retrieval Corpus Rebuild
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam sequenceArrowThickness 1
+autonumber
+
+actor Operator
+participant "Corpus rebuild CLI" as CLI
+database "Candidate JSONL" as Candidates
+database "Decision JSONL" as Decisions
+participant "SigLIP corpus selector" as Selector
+collections "Prior active corpus archive" as Archive
+participant "CorpusRouter" as Router
+participant "ArtworkFilterCorpusStore" as Store
+database "Fresh SQLite + image files" as Corpus
+participant "Pinned CLIP + DINO" as HeavyML
+participant "Retrieval gallery writer" as Gallery
+
+Operator -> CLI : --dry-run
+CLI -> Candidates : load latest candidate per ID
+CLI -> Decisions : load decision history
+CLI -> Selector : require current CID and config hash
+Selector -> Selector : keep artwork-like classes;\nexclude reject/error/routing/repost/quote
+Selector --> Operator : exact selection counts
+
+Operator -> CLI : --confirm-replace
+CLI -> Archive : move prior DB, raw, processed,\nand retrieval HTML
+loop selected candidates in batches
+  CLI -> Router : promoted ACCEPT + full-size source
+  Router -> Corpus : metadata-stripped raw JPEG
+  CLI -> Store : candidate + evidence + route
+  Store -> Corpus : canonical 448x448 JPEG + SQLite upsert
+end
+CLI -> HeavyML : embed every validated artwork
+HeavyML -> Corpus : CLIP vector + DINO pooled + DINO patches
+CLI -> Gallery : two-stage ensemble gallery,\nsame-artist results enabled
+Gallery -> Corpus : read pinned vectors and local images
+Gallery --> Operator : data/search_gallery.html
+
+note over Selector,Store
+  Original SigLIP decision JSONL is not rewritten.
+  Promotion is explicit SQLite seed evidence with
+  reason accept.siglip_corpus_seed.
+end note
+
+@enduml
+
+
+@startuml ArtSearch_SQLite_Data_Model
+title ArtSearch SQLite Data Model
+
+hide methods
+hide stereotypes
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam linetype ortho
+skinparam defaultFontName SansSerif
+skinparam classBorderColor #374151
+skinparam classBackgroundColor #F8FAFC
+
+entity artists {
+  * artist_id : TEXT <<PK>>
+  --
+  display_name : TEXT
+  folder_name : TEXT <<UNIQUE>>
+  source_platform : TEXT
+  source_url : TEXT?
+}
+
+entity artworks {
+  * artwork_id : TEXT <<PK>>
+  --
+  artist_id : TEXT <<FK>>
+  raw_path : TEXT
+  processed_path : TEXT?
+  source_platform : TEXT
+  source_id : TEXT? <<UNIQUE PAIR>>
+  file_hash : TEXT?
+  phash : TEXT?
+  validated : INTEGER
+  review_status : TEXT
+  duplicate_of : TEXT? <<FK self>>
+  transform_fields : scale / pad / crop
+}
+
+entity embeddings {
+  * artwork_id : TEXT <<PK, FK>>
+  --
+  clip_vector : BLOB?
+  dino_pooled : BLOB?
+  dino_patches : BLOB?
+  dimensions : INTEGER fields
+  CLIP_model_name_version : TEXT
+  DINO_model_name_version : TEXT
+}
+
+entity runs {
+  * run_id : INTEGER <<PK>>
+  --
+  script_name : TEXT
+  started_at : TEXT
+  finished_at : TEXT?
+  processed_skipped_errors : INTEGER
+}
+
+entity run_events {
+  * event_id : INTEGER <<PK>>
+  --
+  run_id : INTEGER? <<FK>>
+  artwork_id : TEXT? <<FK>>
+  level : TEXT
+  event_type : TEXT
+  raw_path : TEXT?
+  message : TEXT
+}
+
+entity artwork_filter_decisions {
+  * decision_key : TEXT <<PK>>
+  --
+  candidate_id : TEXT
+  author_did : TEXT?
+  post_uri : TEXT?
+  decision : accept/review/reject/error
+  predicted_class : TEXT
+  route : TEXT
+  scores_and_versions : scalar fields
+  candidate_json : TEXT
+  evidence_json : TEXT
+  processed_at : TEXT
+}
+
+entity artwork_filter_routes {
+  * route_key : TEXT <<PK>>
+  --
+  decision_key : TEXT <<FK, UNIQUE>>
+  artwork_id : TEXT? <<FK>>
+  candidate_id : TEXT
+  target : corpus/review
+  status : stored/duplicate/error
+  local_path : TEXT?
+  hashes_dimensions_errors : fields
+}
+
+artists ||--o{ artworks : owns
+artworks ||--o| embeddings : has
+runs ||--o{ run_events : records
+artworks o|--o{ run_events : referenced by
+artworks o|--o{ artworks : duplicate_of
+artwork_filter_decisions ||--o| artwork_filter_routes : routes
+artworks o|--o{ artwork_filter_routes : imported as
+
+note bottom of artwork_filter_decisions
+  JSONL remains the append-only offline decision stream.
+  This table provides queryable, versioned audit evidence.
+end note
+
+note bottom of embeddings
+  Vectors are stored as normalized NumPy-compatible BLOBs.
+  Search only loads rows matching configured model versions.
+end note
+
+@enduml

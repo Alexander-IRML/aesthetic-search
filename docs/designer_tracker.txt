@@ -161,6 +161,10 @@ convenience filter. Public demos or exported views should default toward safe,
 approved, or placeholder imagery unless the project owner explicitly chooses
 otherwise.
 
+Unlabeled artwork should use an unknown safety state, not a default safe state.
+This keeps private local experiments from accidentally becoming public-facing
+"approved" examples later.
+
 
 Blending decision
 -----------------
@@ -250,3 +254,70 @@ aspects:
 
 The design should make these distinctions understandable without overwhelming
 the user.
+
+
+ENTRY: STAGED RETRIEVAL ENSEMBLE AND EXPLORATION AXES
+Date: 2026-08-02
+Status: Primary ensemble and direction foundation implemented
+
+
+Core decision
+-------------
+
+The primary product mode is now one auditable two-stage retrieval recipe:
+
+1. DINO pooled similarity provides full-corpus broad recall.
+2. Only the top configured shortlist loads patch grids.
+3. DINO patch late interaction reranks that shortlist into the final order.
+4. CLIP similarity is shown beside every result as a parallel semantic lens.
+
+This supersedes the earlier "do not blend yet" hold without introducing the
+blend that decision warned against. There is still no vector concatenation,
+weighted raw-score sum, or hidden universal similarity number. The ensemble is
+an explicit funnel, and CLIP does not vote in its rank.
+
+
+Workbench behavior
+------------------
+
+Browse defaults to the ensemble. Result cards expose:
+
+- final patch score and rank
+- Stage 1 pooled score and full eligible-corpus rank
+- independent CLIP score and full eligible-corpus rank
+- actual shortlist size and eligible candidate count
+- strict-MaxSim versus top-N patch aggregation setting
+
+Evaluation retains ensemble, CLIP-only, pooled-only, and patch-only views. This
+is diagnostic comparison, not four competing product modes. Exported judgments
+capture the component ranks and scores so changes to shortlist size or patch
+aggregation remain auditable.
+
+
+Exploration direction
+---------------------
+
+CLIP text embedding and vector-direction primitives now support the intended
+subject and nameable style/medium axes. Mean-difference directions average
+multiple normalized exemplars, shifted queries are renormalized for cosine
+search, and simultaneous axes can be Gram-Schmidt orthogonalized. The same
+multi-exemplar math supports DINO-pooled facets for unnameable visual qualities.
+
+The current dashboard is static, so it does not expose a fake text slider that
+cannot execute a model. A later live local service should provide continuous
+strength sliders and result shortlists. Structure remains the patch-reranking
+axis. Subject and named medium should stay in CLIP space to preserve the cleanest
+available independence from DINO patch structure.
+
+
+Scaling note
+------------
+
+Stage 1 is currently exact in-memory cosine search rather than ANN because the
+active corpus is small. Its contract is already a shortlist boundary: patch
+BLOBs are fetched from SQLite only for the query and recalled candidates. The
+initial 117-image check found that pooled top-50 retained 92.5% of the
+full-corpus patch top-10, while top-100 retained 100%, so the conservative pilot
+default is 100. This is a measured starting point, not a permanent scaling
+constant. An ANN implementation can replace the Stage 1 scorer later without
+changing Stage 2 or the dashboard evidence model.

@@ -1,0 +1,89 @@
+version = "1.0.0"
+top_k = 2
+
+[classes]
+finished_illustration = [
+    "a finished digital illustration",
+    "a polished character illustration",
+    "a completed digital painting",
+    "a clean finished drawing",
+]
+traditional_art = [
+    "a traditional drawing on paper",
+    "a watercolor or painted artwork",
+    "a finished ink drawing",
+    "a physical painting photographed clearly",
+]
+comic = [
+    "a comic page with illustrated panels",
+    "a sequential art page",
+    "an illustrated comic panel",
+]
+character_sheet = [
+    "a character reference sheet",
+    "a turnaround sheet for an illustrated character",
+    "a model sheet showing a character",
+]
+sketch_or_wip = [
+    "a rough character sketch",
+    "an unfinished digital artwork",
+    "a work in progress drawing",
+]
+three_d_render = [
+    "a polished 3D character render",
+    "a stylized computer-generated character artwork",
+]
+commission_sheet = [
+    "an artist commission price sheet",
+    "a commission information graphic with prices",
+    "an artist terms of service sheet",
+]
+adoptable_sheet = [
+    "an illustrated adoptable character sheet",
+    "an adoptable auction sheet with character designs",
+]
+art_merch_photo = [
+    "a photograph of merchandise printed with artwork",
+    "a photo of an art print or product for sale",
+]
+photo_of_art = [
+    "a photograph of a drawing or painting in a physical environment",
+    "a phone photo showing artwork on paper",
+]
+casual_photo = [
+    "a casual everyday photograph",
+    "a phone photo from daily life",
+    "a photograph of a room or location",
+]
+selfie = [
+    "a selfie photograph of a person",
+    "a casual portrait photo",
+]
+food_photo = [
+    "a casual photograph of food",
+    "a restaurant meal photographed by phone",
+    "a photograph of a burger or drink",
+]
+pet_photo = [
+    "a casual photograph of a pet",
+    "a phone photograph of a dog or cat",
+]
+screenshot = [
+    "a screenshot of a website or application",
+    "a social media screenshot",
+    "a screenshot containing mostly interface and text",
+]
+meme = [
+    "a meme or reaction image",
+    "an image macro with humorous text",
+    "a reaction screenshot",
+]
+text_announcement = [
+    "a text-heavy announcement graphic",
+    "a schedule or informational card",
+    "an image containing mostly text",
+]
+other = [
+    "an image that does not fit any listed artwork or photograph category",
+    "miscellaneous visual content",
+]

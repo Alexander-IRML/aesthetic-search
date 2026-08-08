@@ -6,10 +6,15 @@ from pathlib import Path
 import subprocess
 import webbrowser
 
+from artsearch.artwork_filter.gallery import write_bluesky_gallery
 from artsearch.ingest.config import load_config
 from artsearch.ingest.db import connect, init_db
 from artsearch.retrieval.diagnostics import patch_maxsim_diagnostics
 from artsearch.retrieval.demo import write_gallery_demo, write_search_demo
+from artsearch.retrieval.evaluation import (
+    evaluate_retrieval_judgments,
+    write_retrieval_evaluation,
+)
 from artsearch.retrieval.search import SUPPORTED_RETRIEVAL_MODES
 
 
@@ -51,11 +56,20 @@ def gallery_demo_main() -> None:
     parser.add_argument("--config", default="config/config.yaml")
     parser.add_argument("--output")
     parser.add_argument("--sample-per-artist", type=int, default=3)
+    parser.add_argument(
+        "--review-sessions",
+        type=int,
+        help="Precompute this many non-repeating, artist-balanced review sessions.",
+    )
+    parser.add_argument(
+        "--review-seed",
+        help="Reproduce the same shuffled review query pool.",
+    )
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument(
         "--mode",
         choices=[mode.value for mode in SUPPORTED_RETRIEVAL_MODES],
-        default="dino_pooled",
+        default="ensemble",
     )
     parser.add_argument("--include-same-artist", action="store_true")
     parser.add_argument("--review-status")
@@ -70,6 +84,8 @@ def gallery_demo_main() -> None:
         config_path=args.config,
         output_path=args.output,
         sample_per_artist=args.sample_per_artist,
+        review_session_count=args.review_sessions,
+        review_seed=args.review_seed,
         top_k=args.top_k,
         mode=args.mode,
         include_same_artist=args.include_same_artist,
@@ -83,15 +99,54 @@ def open_gallery_main() -> None:
     parser = argparse.ArgumentParser(
         description="Write a fresh local ArtSearch gallery demo and open it.",
     )
+    parser.add_argument(
+        "--source",
+        choices=["retrieval", "bluesky"],
+        default="retrieval",
+        help="Render embedded retrieval results or Bluesky filter decisions.",
+    )
     parser.add_argument("--config", default="config/config.yaml")
+    parser.add_argument("--output", help="Optional HTML output path.")
+    parser.add_argument(
+        "--candidates",
+        default="data/bluesky/image_candidates.jsonl",
+        help="ImageCandidate JSONL used by --source bluesky.",
+    )
+    parser.add_argument(
+        "--decisions",
+        default="data/filter/decisions.jsonl",
+        help="FilterResult JSONL used by --source bluesky.",
+    )
     parser.add_argument("--sample-per-artist", type=int, default=3)
+    parser.add_argument(
+        "--review-sessions",
+        type=int,
+        help="Precompute this many non-repeating, artist-balanced review sessions.",
+    )
+    parser.add_argument(
+        "--review-seed",
+        help="Reproduce the same shuffled review query pool.",
+    )
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument(
         "--mode",
         choices=[mode.value for mode in SUPPORTED_RETRIEVAL_MODES],
-        default="dino_pooled",
+        default="ensemble",
     )
-    parser.add_argument("--include-same-artist", action="store_true")
+    same_artist = parser.add_mutually_exclusive_group()
+    same_artist.add_argument(
+        "--include-same-artist",
+        dest="include_same_artist",
+        action="store_true",
+        help="Include works by the query artist (the default for this launcher).",
+    )
+    same_artist.add_argument(
+        "--exclude-same-artist",
+        dest="include_same_artist",
+        action="store_false",
+        help="Hide works by the query artist.",
+    )
+    parser.set_defaults(include_same_artist=True)
     parser.add_argument("--review-status")
     parser.add_argument(
         "--is-sfw",
@@ -106,18 +161,34 @@ def open_gallery_main() -> None:
     )
     args = parser.parse_args()
 
-    output_path = _fresh_gallery_output_path(args.config, args.mode)
-    output_path = write_gallery_demo(
-        config_path=args.config,
-        output_path=output_path,
-        sample_per_artist=args.sample_per_artist,
-        top_k=args.top_k,
-        mode=args.mode,
-        include_same_artist=args.include_same_artist,
-        review_status=args.review_status,
-        is_sfw=_parse_is_sfw(args.is_sfw),
-    )
-    print(f"Wrote fresh gallery demo: {output_path}")
+    if args.source == "bluesky":
+        config = load_config(args.config)
+        output_path = (
+            _project_path(config.root_dir, args.output)
+            if args.output
+            else _fresh_bluesky_gallery_output_path(config.root_dir)
+        )
+        output_path = write_bluesky_gallery(
+            candidates_path=_project_path(config.root_dir, args.candidates),
+            decisions_path=_project_path(config.root_dir, args.decisions),
+            output_path=output_path,
+        )
+        print(f"Wrote fresh Bluesky corpus gallery: {output_path}")
+    else:
+        output_path = args.output or _fresh_gallery_output_path(args.config, args.mode)
+        output_path = write_gallery_demo(
+            config_path=args.config,
+            output_path=output_path,
+            sample_per_artist=args.sample_per_artist,
+            review_session_count=args.review_sessions,
+            review_seed=args.review_seed,
+            top_k=args.top_k,
+            mode=args.mode,
+            include_same_artist=args.include_same_artist,
+            review_status=args.review_status,
+            is_sfw=_parse_is_sfw(args.is_sfw),
+        )
+        print(f"Wrote fresh gallery demo: {output_path}")
     if not args.no_open:
         _open_path(output_path)
 
@@ -154,6 +225,19 @@ def patch_diagnostics_main() -> None:
         )
 
 
+def retrieval_evaluate_main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Evaluate relevance judgments exported by the retrieval dashboard.",
+    )
+    parser.add_argument("--judgments", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+
+    report = evaluate_retrieval_judgments(args.judgments)
+    output_path = write_retrieval_evaluation(report, args.output)
+    print(f"Wrote retrieval evaluation: {output_path}")
+
+
 def _parse_is_sfw(value: str) -> bool | None:
     if value == "all":
         return None
@@ -165,6 +249,16 @@ def _fresh_gallery_output_path(config_path: str, mode: str) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     filename = f"search_gallery_{timestamp}_{mode}.html"
     return config.root_dir / "data" / filename
+
+
+def _fresh_bluesky_gallery_output_path(root_dir: Path) -> Path:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    return root_dir / "data" / f"bluesky_corpus_gallery_{timestamp}.html"
+
+
+def _project_path(root_dir: Path, value: str | Path) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else root_dir / path
 
 
 def _open_path(path: Path) -> None:

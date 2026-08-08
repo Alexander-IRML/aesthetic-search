@@ -1,7 +1,10 @@
+from dataclasses import replace
+import json
 from pathlib import Path
 
 import numpy as np
 
+import artsearch.retrieval.search as search_module
 from artsearch.embed.storage import ImageEmbeddings, upsert_embedding
 from artsearch.ingest.artists import ArtistRecord, register_artist
 from artsearch.ingest.config import (
@@ -178,6 +181,102 @@ def test_patch_maxsim_is_spatially_agnostic(tmp_path):
     assert results[0].score == 1.0
 
 
+def test_ensemble_shortlists_by_pooled_then_reranks_by_patch(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    config = replace(
+        config,
+        retrieval=RetrievalConfig(
+            default_top_k=2,
+            demo_output_path=config.retrieval.demo_output_path,
+            gallery_output_path=config.retrieval.gallery_output_path,
+            shortlist_size=2,
+            patch_match_top_n=1,
+        ),
+    )
+    conn = connect(config.database_path)
+    init_db(conn)
+    matching_patches = np.tile(np.array([[1.0, 0.0]], dtype=np.float32), (4, 1))
+    nonmatching_patches = np.tile(np.array([[0.0, 1.0]], dtype=np.float32), (4, 1))
+    _insert_artwork_with_embedding(
+        conn,
+        config,
+        artwork_id="query",
+        artist_id="artist_a",
+        clip_vector=np.array([1.0, 0.0], dtype=np.float32),
+        dino_pooled=np.array([1.0, 0.0], dtype=np.float32),
+        dino_patches=matching_patches,
+    )
+    _insert_artwork_with_embedding(
+        conn,
+        config,
+        artwork_id="clip_and_pooled_winner",
+        artist_id="artist_b",
+        clip_vector=np.array([1.0, 0.0], dtype=np.float32),
+        dino_pooled=np.array([0.99, 0.01], dtype=np.float32),
+        dino_patches=nonmatching_patches,
+    )
+    _insert_artwork_with_embedding(
+        conn,
+        config,
+        artwork_id="patch_winner",
+        artist_id="artist_c",
+        clip_vector=np.array([-1.0, 0.0], dtype=np.float32),
+        dino_pooled=np.array([0.8, 0.2], dtype=np.float32),
+        dino_patches=matching_patches,
+    )
+    _insert_artwork_with_embedding(
+        conn,
+        config,
+        artwork_id="outside_shortlist",
+        artist_id="artist_d",
+        clip_vector=np.array([0.0, 1.0], dtype=np.float32),
+        dino_pooled=np.array([-1.0, 0.0], dtype=np.float32),
+        dino_patches=matching_patches,
+    )
+
+    loaded_patch_ids = []
+    original_loader = search_module._load_patch_matrices
+
+    def tracking_loader(conn, config, artwork_ids):
+        loaded_patch_ids.extend(artwork_ids)
+        return original_loader(conn, config, artwork_ids)
+
+    monkeypatch.setattr(search_module, "_load_patch_matrices", tracking_loader)
+
+    results = search_similar(
+        conn,
+        config,
+        "query",
+        top_k=2,
+        mode=RetrievalMode.ENSEMBLE,
+    )
+
+    assert [result.artwork_id for result in results] == [
+        "patch_winner",
+        "clip_and_pooled_winner",
+    ]
+    assert results[0].pooled_rank == 2
+    assert results[0].patch_rank == 1
+    assert results[0].clip_rank == 3
+    assert results[0].score == results[0].patch_score == 1.0
+    assert results[0].shortlist_size == 2
+    assert results[0].candidate_count == 3
+    assert set(loaded_patch_ids) == {
+        "query",
+        "clip_and_pooled_winner",
+        "patch_winner",
+    }
+    assert "outside_shortlist" not in loaded_patch_ids
+
+
+def test_patch_maxsim_can_average_multiple_candidate_matches():
+    query = np.array([[1.0, 0.0]], dtype=np.float32)
+    candidate = np.array([[1.0, 0.0], [-1.0, 0.0]], dtype=np.float32)
+
+    assert patch_maxsim_score(query, candidate, top_n=1) == 1.0
+    assert patch_maxsim_score(query, candidate, top_n=2) == 0.0
+
+
 def test_search_filters_review_status_and_sfw_candidates(tmp_path):
     config = _config(tmp_path)
     conn = connect(config.database_path)
@@ -321,10 +420,111 @@ def test_gallery_demo_writes_clickable_query_payload(tmp_path, monkeypatch):
     )
 
     html = output_path.read_text(encoding="utf-8")
-    assert "ArtSearch Gallery Demo" in html
+    assert "ArtSearch Retrieval Workbench" in html
+    assert "Evaluation Stats" in html
+    assert "Export judgments" in html
+    assert "Next review session" in html
+    assert "currentSessionIsExported" in html
+    assert "review_session_id" in html
+    assert "CLIP subject" in html
+    assert "DINO patch MaxSim" in html
+    assert "Two-stage funnel diagnostics" in html
+    assert "CLIP semantic lens" in html
     assert "processed/artist_a/query.jpg" in html
     assert "processed/artist_b/result.jpg" in html
     assert "data-index" in html
+    embedded = html.split(
+        '<script id="searchData" type="application/json">',
+        maxsplit=1,
+    )[1].split("</script>", maxsplit=1)[0]
+    payload = json.loads(embedded)
+    first_result = payload["queries"][0]["results"][0]
+    first_session = payload["evaluation"]["sessions"][0]
+    assert payload["schemaVersion"] == "3.0"
+    assert payload["mode"]["value"] == RetrievalMode.ENSEMBLE.value
+    assert first_result["retrieval"]["orderingSignal"] == "patch"
+    assert set(first_result["retrieval"]["components"]) == {"pooled", "patch", "clip"}
+    assert first_session["queryCount"] == 2
+    assert payload["evaluation"]["sessionPlan"]["requestedSessions"] == 3
+    assert payload["evaluation"]["sessionPlan"]["generatedSessions"] == 1
+    assert payload["evaluation"]["funnelStats"]["meanPatchTopKAgreement"] == 1.0
+
+
+def test_gallery_demo_builds_reproducible_nonrepeating_review_sessions(
+    tmp_path,
+    monkeypatch,
+):
+    config = _config(tmp_path)
+    conn = connect(config.database_path)
+    init_db(conn)
+    for artist_index, artist_id in enumerate(("artist_a", "artist_b")):
+        for artwork_index in range(3):
+            _insert_artwork_with_embedding(
+                conn,
+                config,
+                artwork_id=f"{artist_id}_{artwork_index}",
+                artist_id=artist_id,
+                vector=np.array(
+                    [1.0 + artist_index, 0.1 + artwork_index],
+                    dtype=np.float32,
+                ),
+            )
+    monkeypatch.setattr("artsearch.retrieval.demo.load_config", lambda path: config)
+
+    first_path = write_gallery_demo(
+        config_path="unused.yaml",
+        output_path=tmp_path / "first.html",
+        sample_per_artist=2,
+        review_session_count=3,
+        review_seed="repeatable-review",
+        top_k=1,
+    )
+    second_path = write_gallery_demo(
+        config_path="unused.yaml",
+        output_path=tmp_path / "second.html",
+        sample_per_artist=2,
+        review_session_count=3,
+        review_seed="repeatable-review",
+        top_k=1,
+    )
+
+    first_payload = _dashboard_payload(first_path)
+    second_payload = _dashboard_payload(second_path)
+    sessions = first_payload["evaluation"]["sessions"]
+    flattened_queries = [
+        entry["query"]
+        for session in sessions
+        for entry in session["queries"]
+    ]
+
+    assert first_payload["evaluation"]["sessionPlan"] == {
+        "seed": "repeatable-review",
+        "requestedSessions": 3,
+        "generatedSessions": 3,
+        "selection": "seeded_artist_balanced_without_replacement",
+    }
+    assert [session["queryCount"] for session in sessions] == [2, 2, 2]
+    assert [session["artistCount"] for session in sessions] == [2, 2, 2]
+    assert len({query["artworkId"] for query in flattened_queries}) == 6
+    assert [session["id"] for session in sessions] == [
+        session["id"] for session in second_payload["evaluation"]["sessions"]
+    ]
+    assert [
+        [entry["query"]["artworkId"] for entry in session["queries"]]
+        for session in sessions
+    ] == [
+        [entry["query"]["artworkId"] for entry in session["queries"]]
+        for session in second_payload["evaluation"]["sessions"]
+    ]
+
+
+def _dashboard_payload(path: Path) -> dict:
+    html = path.read_text(encoding="utf-8")
+    embedded = html.split(
+        '<script id="searchData" type="application/json">',
+        maxsplit=1,
+    )[1].split("</script>", maxsplit=1)[0]
+    return json.loads(embedded)
 
 
 def _insert_artwork_with_embedding(

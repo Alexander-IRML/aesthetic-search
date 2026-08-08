@@ -1,0 +1,31 @@
+version = "1.0.0"
+
+[api]
+base_url = "https://public.api.bsky.app"
+timeout_seconds = 20
+user_agent = "ArtSearchResearch/0.1"
+page_limit = 100
+max_pages = 10
+feed_filter = "posts_with_media"
+max_retries = 4
+retry_backoff_seconds = 0.5
+retry_backoff_max_seconds = 15.0
+
+[moderation]
+public_safe_mode = true
+excluded_labels = [
+    "!hide",
+    "!warn",
+    "!no-unauthenticated",
+    "porn",
+    "sexual",
+    "sexual-figurative",
+    "nudity",
+    "graphic-media",
+    "gore",
+]
+excluded_text_terms = ["18+", "explicit", "lewd", "nsfw", "porn", "yiff", "\U0001F51E"]
+
+[storage]
+candidates_jsonl_path = "data/bluesky/image_candidates.jsonl"
+checkpoint_jsonl_path = "data/bluesky/collection_checkpoints.jsonl"

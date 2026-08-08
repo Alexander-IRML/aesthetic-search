@@ -1,2 +1,1 @@
-"""Baseline retrieval and demo helpers for ArtSearch."""
-
+"""Staged visual retrieval, exploration axes, and evaluation helpers."""

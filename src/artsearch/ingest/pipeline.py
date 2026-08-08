@@ -184,6 +184,7 @@ def _process_one(
                 "source_platform": "manual",
                 "file_hash": file_hash,
                 "phash": phash,
+                "is_sfw": None,
                 "review_status": review_status,
                 "duplicate_of": duplicate_of,
             },

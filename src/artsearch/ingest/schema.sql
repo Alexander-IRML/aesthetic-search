@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS artworks (
     orig_height     INTEGER,
     file_hash       TEXT,
     phash           TEXT,
-    is_sfw          INTEGER DEFAULT 1,
+    is_sfw          INTEGER,
     validated       INTEGER DEFAULT 0,
     review_status   TEXT NOT NULL DEFAULT 'unreviewed'
         CHECK (review_status IN (
@@ -86,6 +86,55 @@ CREATE TABLE IF NOT EXISTS run_events (
     created_at  TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS artwork_filter_decisions (
+    decision_key       TEXT PRIMARY KEY,
+    candidate_id       TEXT NOT NULL,
+    author_did         TEXT,
+    post_uri           TEXT,
+    image_index        INTEGER,
+    image_sha256       TEXT,
+    decision           TEXT NOT NULL
+        CHECK (decision IN ('accept', 'review', 'reject', 'error')),
+    predicted_class    TEXT NOT NULL,
+    accepted_for_main_corpus INTEGER NOT NULL,
+    route              TEXT NOT NULL,
+    final_score        REAL NOT NULL,
+    confidence         REAL NOT NULL,
+    reason_codes_json  TEXT NOT NULL,
+    candidate_json     TEXT NOT NULL,
+    evidence_json      TEXT NOT NULL,
+    model_id           TEXT NOT NULL,
+    model_revision     TEXT,
+    config_version     TEXT NOT NULL,
+    config_hash        TEXT NOT NULL,
+    prompt_version     TEXT,
+    classifier_version TEXT,
+    software_version   TEXT NOT NULL,
+    processed_at       TEXT NOT NULL,
+    duration_ms        REAL NOT NULL,
+    error_type         TEXT,
+    error_message      TEXT,
+    date_added         TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS artwork_filter_routes (
+    route_key       TEXT PRIMARY KEY,
+    decision_key    TEXT NOT NULL REFERENCES artwork_filter_decisions(decision_key),
+    candidate_id    TEXT NOT NULL,
+    target          TEXT NOT NULL CHECK (target IN ('corpus', 'review')),
+    status          TEXT NOT NULL CHECK (status IN ('stored', 'duplicate', 'error')),
+    local_path      TEXT,
+    image_sha256    TEXT,
+    perceptual_hash TEXT,
+    width           INTEGER,
+    height          INTEGER,
+    artwork_id      TEXT REFERENCES artworks(artwork_id),
+    error_type      TEXT,
+    error_message   TEXT,
+    routed_at       TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(decision_key)
+);
+
 CREATE INDEX IF NOT EXISTS idx_artworks_artist ON artworks(artist_id);
 CREATE INDEX IF NOT EXISTS idx_artworks_file_hash ON artworks(file_hash);
 CREATE INDEX IF NOT EXISTS idx_artworks_phash ON artworks(phash);
@@ -93,3 +142,9 @@ CREATE INDEX IF NOT EXISTS idx_artworks_review_status ON artworks(review_status)
 CREATE INDEX IF NOT EXISTS idx_embeddings_models
     ON embeddings(model_name_dino, model_version_dino, model_name_clip, model_version_clip);
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id);
+CREATE INDEX IF NOT EXISTS idx_filter_decisions_candidate
+    ON artwork_filter_decisions(candidate_id, processed_at);
+CREATE INDEX IF NOT EXISTS idx_filter_decisions_outcome
+    ON artwork_filter_decisions(decision, predicted_class);
+CREATE INDEX IF NOT EXISTS idx_filter_routes_candidate
+    ON artwork_filter_routes(candidate_id, target, status);

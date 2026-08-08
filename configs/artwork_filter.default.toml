@@ -1,0 +1,71 @@
+version = "1.0.0"
+mode = "zero_shot"
+
+[model]
+model_id = "google/siglip2-base-patch16-224"
+revision = ""
+device = "auto"
+dtype = "auto"
+batch_size = 32
+compile_model = false
+cache_embeddings = true
+normalize_embeddings = true
+preprocessing_version = "siglip2-fixres-v1"
+
+[downloads]
+timeout_seconds = 20
+max_bytes = 15000000
+max_retries = 2
+prefer_thumbnail = true
+allow_fullsize_fallback = true
+user_agent = "ArtSearchResearch/0.1"
+max_concurrency = 8
+max_redirects = 5
+allowed_bluesky_image_hosts = ["cdn.bsky.app"]
+
+[media]
+min_width = 256
+min_height = 256
+min_area = 100000
+max_aspect_ratio = 8.0
+allow_animated = false
+convert_rgba_to_rgb_background = "white"
+reject_corrupt = true
+review_low_variance = true
+low_variance_threshold = 2.0
+max_pixels = 100000000
+
+[policy]
+automatic_accept_enabled = false
+accept_finished_illustration = true
+accept_traditional_art = true
+accept_comic = true
+accept_character_sheet = true
+accept_sketch_or_wip = false
+accept_three_d_render = true
+accept_photo_of_art = false
+accept_art_merch_photo = false
+accept_commission_sheet = false
+accept_adoptable_sheet = false
+
+[thresholds]
+accept_score = 0.78
+reject_score = 0.35
+minimum_margin = 0.12
+force_review_below_confidence = 0.65
+
+[ensemble]
+visual_weight = 0.85
+text_weight = 0.10
+rule_adjustment_weight = 0.05
+
+[reposts]
+force_review_reposts = true
+reject_known_other_artist_reposts = false
+
+[storage]
+decision_jsonl_path = "data/filter/decisions.jsonl"
+cache_dir = "data/cache/artwork_filter"
+review_image_dir = "data/filter/review_images"
+download_review_images = false
+durability_mode = "strict"

@@ -41,6 +41,9 @@ class RetrievalConfig:
     default_top_k: int
     demo_output_path: Path
     gallery_output_path: Path
+    shortlist_size: int = 100
+    patch_match_top_n: int = 1
+    review_session_count: int = 3
 
 
 @dataclass(frozen=True)
@@ -99,6 +102,9 @@ def load_config(path: str | Path = "config/config.yaml") -> AppConfig:
             root_dir,
             retrieval.get("gallery_output", "data/search_gallery.html"),
         ),
+        shortlist_size=int(retrieval.get("shortlist_size", 100)),
+        patch_match_top_n=int(retrieval.get("patch_match_top_n", 1)),
+        review_session_count=int(retrieval.get("review_session_count", 3)),
     )
 
     _validate_image_config(image_config)
@@ -166,3 +172,9 @@ def _validate_embedding_config(config: EmbeddingConfig) -> None:
 def _validate_retrieval_config(config: RetrievalConfig) -> None:
     if config.default_top_k <= 0:
         raise ValueError("retrieval.default_top_k must be positive")
+    if config.shortlist_size <= 0:
+        raise ValueError("retrieval.shortlist_size must be positive")
+    if config.patch_match_top_n <= 0:
+        raise ValueError("retrieval.patch_match_top_n must be positive")
+    if config.review_session_count <= 0:
+        raise ValueError("retrieval.review_session_count must be positive")

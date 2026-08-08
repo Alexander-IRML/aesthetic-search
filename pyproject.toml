@@ -4,15 +4,17 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aesthetic-search"
-version = "0.2.1"
+version = "0.3.0"
 description = "Data preparation pipeline for ArtSearch visual similarity search."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }
 dependencies = [
+    "httpx>=0.28.0",
     "imagehash>=4.3.1",
     "numpy>=2.0.0",
     "pillow>=10.0.0",
+    "pydantic>=2.0.0",
     "pyyaml>=6.0.0",
 ]
 
@@ -20,7 +22,11 @@ dependencies = [
 embed = [
     "torch>=2.3.0",
     "torchvision>=0.18.0",
-    "transformers>=4.48.0",
+    "transformers>=4.49.0",
+]
+filter = [
+    "torch>=2.3.0",
+    "transformers>=4.49.0",
 ]
 dev = [
     "pytest>=8.0.0",
@@ -36,6 +42,11 @@ artsearch-search-demo = "artsearch.retrieval.cli:search_demo_main"
 artsearch-gallery-demo = "artsearch.retrieval.cli:gallery_demo_main"
 artsearch-open-gallery = "artsearch.retrieval.cli:open_gallery_main"
 artsearch-patch-diagnostics = "artsearch.retrieval.cli:patch_diagnostics_main"
+artsearch-retrieval-evaluate = "artsearch.retrieval.cli:retrieval_evaluate_main"
+artsearch-artwork-filter = "artsearch.artwork_filter.cli:main"
+artsearch-bluesky-collect = "artsearch.bluesky.cli:main"
+artsearch-bluesky-pipeline = "artsearch.bluesky_pipeline_cli:main"
+artsearch-rebuild-bluesky-corpus = "artsearch.bluesky_corpus_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/artsearch"]

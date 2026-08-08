@@ -3,9 +3,85 @@
 Project changes worth remembering live here. Keep entries concise and focused on
 what changed, why it matters, and any verification that was done.
 
-## Unreleased
+## v0.3.0 - 2026-08-07
 
-No unreleased changes.
+### Highlights
+
+- Completed the first end-to-end Bluesky path from public feed collection,
+  auditable artwork triage, and corpus routing through SQLite import, heavy
+  retrieval embeddings, and local visual evaluation.
+- Turned the retrieval gallery into a repeatable review workbench with separate
+  corpus and final-result views, model evidence, judgment export, and seeded
+  follow-up sessions.
+
+### Added
+
+- Added a read-only Bluesky public AppView collector with paged author-feed
+  traversal, image-candidate extraction, retry handling, moderation controls,
+  actor-list workflows, and appendable or replaceable JSONL audit streams.
+- Added `artsearch.artwork_filter`: typed candidate/result schemas, bounded
+  local and HTTP image loading, deterministic media and provenance rules,
+  independent text signals, stable reason codes, and structured failures.
+- Added a versioned multi-class SigLIP 2 prompt bank and lazy backend with
+  batched CPU/GPU inference, normalized embeddings, bounded OOM recovery,
+  prompt caching, and finite-value validation.
+- Added streaming `classify-jsonl`, one-image classification, prompt inspection,
+  deterministic-only operation, configuration-aware resume behavior, and a
+  real-model smoke test that compares batch and single inference.
+- Added atomic image-feature caching with validated shapes and dtypes; damaged
+  entries are ignored and removed instead of entering a decision.
+- Added append-only filter-decision JSONL plus boundary-prioritized review CSV,
+  cumulative label import, exact decision replay, per-class and artist-level
+  evaluation, and conservative threshold calibration reports.
+- Added an integrated Bluesky pipeline that collects or replays candidates,
+  classifies them in ordered batches, downloads full-size ACCEPT/REVIEW images,
+  strips source metadata, and preserves evidence for REJECT/ERROR outcomes.
+- Added SQLite `artwork_filter_decisions` and `artwork_filter_routes` audit
+  tables, idempotent accepted-artwork upserts, canonical image processing, and
+  a rebuild command for promoting a filtered Bluesky corpus into retrieval.
+- Added explicit CLIP subject, DINOv2 pooled style, and DINOv2 patch-detail
+  retrieval evidence with model-version checks and local diagnostics.
+- Added a staged ensemble retriever: configurable component weighting, pooled
+  shortlist generation, patch MaxSim reranking, same-artist controls, and
+  per-component score explanations instead of concatenating unlike vectors.
+- Added retrieval direction primitives for controlled CLIP text/image and DINO
+  style exploration, along with offline relevance metrics and judgment export.
+- Added corpus and final retrieval dashboards with image provenance, filter and
+  ensemble evidence, an evaluation tab, model decisions, review controls, and
+  missing-image diagnostics.
+- Added seeded, artist-balanced multi-session review generation with unique
+  query selection, saved progress, cumulative exports, and an export gate before
+  revealing the next precomputed session.
+- Added a complete PlantUML application, sequence, and SQLite architecture
+  document covering collection through retrieval.
+
+### Changed
+
+- Changed the gallery data source from the original manually registered corpus
+  to accepted SigLIP-gated Bluesky artwork promoted through the same SQLite
+  embedding and retrieval layer.
+- Made retrieval composition explicit and inspectable: CLIP subject, DINO pooled
+  style, and DINO patch detail remain separate scores combined by policy.
+- Changed unlabeled artwork safety metadata to default to unknown instead of
+  implicitly safe.
+- Kept live artist pools and corpus-specific analysis local while retaining
+  public example manifests and generic architecture documentation.
+- Cleaned stale documentation that referred to the old `pipeline_runs` table
+  name; the current schema uses `runs` and `run_events`.
+
+### Privacy
+
+- Made the complete `data/` tree private and generated-by-default, covering
+  source images, processed images, SQLite databases, caches, review artifacts,
+  decision streams, dashboard exports, screenshots, and corpus archives.
+- Kept local artist manifests, Bluesky actor lists, corpus-specific reports, and
+  downloaded model artifacts out of Git while retaining safe templates and
+  artifact documentation.
+
+### Verified
+
+- `python -m pytest`: 105 tests passed.
+- `python -m ruff check .`: all checks passed.
 
 ## v0.2.1 - 2026-07-14
 

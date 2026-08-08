@@ -3,7 +3,7 @@
 ArtSearch is an early-stage visual search system for artwork. The current MVP
 builds the foundation for a private image corpus: deterministic data
 preparation, SQLite-backed metadata tracking, multimodal embedding generation,
-baseline vector retrieval, and a local HTML inspection interface.
+staged visual retrieval, and a local HTML evaluation interface.
 
 The project is intentionally structured as a pipeline rather than a one-off
 notebook. Raw source images remain untouched, processed artifacts are
@@ -14,14 +14,15 @@ deduplication, embedding, and review workflows can be made repeatable.
 
 The current system can ingest artist folders from a private local corpus,
 standardize images into a canonical model-ready format, generate CLIP and DINOv2
-embeddings, and run several baseline similarity modes over the processed
-collection. It also generates local HTML demos that make retrieval quality
-visible without requiring a deployed web app.
+embeddings, and run staged visual retrieval over the processed collection.
+It also generates local HTML demos that make retrieval quality visible without
+requiring a deployed web app.
 
-At this stage, retrieval supports CLIP subject similarity, DINOv2 pooled global
-visual similarity, and DINOv2 patch MaxSim local-detail similarity. These modes
-are kept separate so their behavior can be compared directly before any blended
-ranking is introduced.
+Primary retrieval now uses DINOv2 pooled image embeddings for full-corpus recall
+and DINOv2 patch grids for shortlist-only late-interaction reranking. CLIP runs
+as a separate semantic measurement and is reported beside the final results; it
+is deliberately excluded from ensemble ordering. The component baselines remain
+available for diagnosis and human relevance evaluation.
 
 ## Data Preparation
 
@@ -45,14 +46,14 @@ patches or UI selections back to original image coordinates.
 
 The project uses SQLite as a local metadata store. The schema currently tracks:
 
-- `artists`: registered source identities and folder mappings.
-- `artworks`: raw paths, processed paths, hashes, validation state, duplicate
-  review metadata, and transform metadata.
-- `pipeline_runs`: top-level records for ingestion and embedding runs.
-- `run_events`: structured event logs for skips, errors, duplicate detection,
-  and other pipeline observations.
-- `embeddings`: CLIP vectors, DINO pooled vectors, DINO patch grids, model names,
-  model versions, and dimensional metadata.
+* `artists`: registered source identities and folder mappings.
+* `artworks`: raw paths, processed paths, hashes, validation state, duplicate
+review metadata, and transform metadata.
+* `pipeline\\\_runs`: top-level records for ingestion and embedding runs.
+* `run\\\_events`: structured event logs for skips, errors, duplicate detection,
+and other pipeline observations.
+* `embeddings`: CLIP vectors, DINO pooled vectors, DINO patch grids, model names,
+model versions, and dimensional metadata.
 
 Exact duplicate files are skipped during ingestion and logged instead of creating
 new artwork rows. Near-duplicates are preserved as distinct rows but given a
@@ -65,9 +66,9 @@ The embedding phase uses optional ML dependencies so the core data-prep pipeline
 can still be installed and tested without large model packages. When the
 embedding dependencies are installed, the project generates:
 
-- CLIP image embeddings for future semantic and text-aligned search.
-- DINOv2 pooled image embeddings for current visual similarity retrieval.
-- DINOv2 patch embeddings for future local-feature matching and reranking.
+* CLIP image embeddings for semantic evidence and subject retrieval.
+* DINOv2 pooled image embeddings for global recall and visual-style diagnosis.
+* DINOv2 patch embeddings for local-feature matching and final reranking.
 
 Embeddings are stored as binary vector blobs with explicit dimensional metadata.
 Model name and model version are recorded for idempotency: if an artwork already
@@ -75,37 +76,37 @@ has embeddings for the configured model versions, reruns can skip it safely.
 This keeps repeated local runs fast and protects the database from accidental
 mixed-model comparisons.
 
-## Retrieval Baseline
+## Retrieval Ensemble
 
-The retrieval MVP builds in-memory brute-force indexes from validated artworks
-that have current embeddings. Vector modes load CLIP or DINOv2 pooled vectors,
-L2-normalize them, and score candidates with a dot product, which is equivalent
-to cosine similarity for normalized vectors.
+The retrieval MVP builds exact in-memory global-vector indices from validated
+artworks with current pinned embeddings. Its default recipe has two stages:
 
-DINO patch MaxSim loads the stored patch grid for each image, computes the full
-query-patch by candidate-patch similarity matrix, takes the best candidate patch
-for each query patch, and averages those best-match scores. This makes MaxSim a
-local-detail and structural correspondence signal rather than a global style
-score.
+1. L2-normalized DINO pooled vectors score every eligible candidate by cosine
+similarity and select a configurable recall shortlist.
+2. SQLite loads patch BLOBs only for the query and shortlist. A ColBERT-style
+late interaction score reranks that shortlist into the final result order.
 
-The current search excludes the query image and filters out same-artist results.
-It also supports shared filters for same-artist inclusion, review status, and
-SFW metadata.
+Strict MaxSim is the default. A configurable top-N variant can average several
+candidate matches per query patch for controlled A/B evaluation. CLIP cosine
+scores and ranks are calculated over the same eligible candidate set as a
+parallel semantic lens, but they do not alter the DINO funnel. There is no raw
+score sum or vector concatenation.
 
-This baseline is intentionally explicit. It establishes measurable retrieval
-paths before adding more complex ranking logic such as CLIP/DINO score blending,
-mask-guided patch matching, or learned rerankers.
+The query image is always excluded. Same-artist, review-state, and safety
+filters are applied before shortlisting, so displayed Stage 1 ranks describe the
+actual eligible pool. Exact global search is appropriate for the current corpus;
+the shortlist contract allows a later ANN implementation without changing the
+reranker or result evidence.
 
 ## Local Evaluation UI
 
 The project includes two local HTML demo generators:
 
-- `scripts/search_demo.py` writes a single-query page for one artwork ID.
-- `scripts/search_gallery.py` writes a small gallery interface that samples a
-  few query images per artist and displays top-k matches when a query is
-  selected.
+* `scripts/search\\\_demo.py` writes a single-query page for one artwork ID.
+* `scripts/search\\\_gallery.py` writes a retrieval workbench that samples query
+images, displays the ensemble ranking, and compares component baselines.
 
-These demos are generated into `data/search_*.html` and reference local
+These demos are generated into `data/search\\\_\\\*.html` and reference local
 processed image paths. They do not embed image bytes directly into the HTML, and
 the generated files are intentionally ignored by git. This keeps qualitative
 evaluation fast while preserving the privacy boundary around the local corpus.
@@ -114,12 +115,12 @@ evaluation fast while preserving the privacy boundary around the local corpus.
 
 The repository is designed so private corpus artifacts stay local. Git ignores:
 
-- `data/raw/`
-- `data/processed/`
-- `data/*.db`
-- `data/search_*.html`
-- `config/artists.local.yaml`
-- `.venv/`
+* `data/raw/`
+* `data/processed/`
+* `data/\\\*.db`
+* `data/search\\\_\\\*.html`
+* `config/artists.local.yaml`
+* `.venv/`
 
 The tracked `config/artists.yaml` is now a public-safe example manifest. Real
 local artist registrations belong in `config/artists.local.yaml`, which the CLI
@@ -132,60 +133,53 @@ Current verification includes automated tests and real local pipeline runs.
 
 Automated checks:
 
-- `pytest`: 21 tests passing.
-- `ruff`: all checks passing.
+* `pytest`: 104 tests passing.
+* `ruff`: all checks passing.
 
 Test coverage currently includes:
 
-- SQLite schema initialization.
-- Transform math for crop, scale, and pad behavior.
-- Pipeline edge cases and path handling.
-- Embedding BLOB serialization and deserialization.
-- Embedding idempotency.
-- Retrieval filtering and ranking behavior.
-- Patch MaxSim scoring and diagnostics.
-- Demo output generation.
+* SQLite schema initialization.
+* Transform math for crop, scale, and pad behavior.
+* Pipeline edge cases and path handling.
+* Embedding BLOB serialization and deserialization.
+* Embedding idempotency.
+* Retrieval filtering and ranking behavior.
+* Demo output generation.
 
 Local corpus verification:
 
-- 143 images processed successfully.
-- 143 validated artworks recorded.
-- 0 standardization errors.
-- 143 embeddings generated.
-- Embedding rerun skipped already-current records as expected.
-- Local search and gallery demos generated successfully.
+* 117 validated artworks in the active Bluesky-derived corpus.
+* 12 source artists represented.
+* 117 current CLIP/DINO embedding records.
+* Embedding rerun skipped already-current records as expected.
+* Local search and gallery demos generated successfully.
 
 ## Current Limitations
 
-The current retrieval ranking is a baseline, not the final search strategy.
-DINOv2 pooled embeddings provide a global visual similarity signal, which can
-capture broad subject, composition, and style likeness, but it is not yet
-fine-grained enough for all visual-search use cases.
+The current retrieval ranking is an interpretable first ensemble, not a learned
+final search strategy. Its stages have distinct responsibilities and can still
+fail independently.
 
 Known limitations:
 
-- Retrieval signals are separate modes and are not yet blended or benchmarked
-  against human judgments.
-- Patch MaxSim is unmasked and can still be influenced by low-information
-  patches.
-- Retrieval is brute-force in memory rather than indexed with FAISS or another
-  approximate nearest-neighbor system.
-- The gallery is a static local demo rather than an interactive web service.
-- Duplicate review states exist in the schema, but there is not yet a human
-  review UI.
+* Retrieval is brute-force in memory rather than indexed with FAISS or another
+approximate nearest-neighbor system.
+* The gallery is a static local demo rather than an interactive web service.
+* CLIP text-delta and exemplar-direction math exists, but interactive exploration
+sliders require a live local model service rather than static HTML.
+* Full-corpus Stage 1 recall cannot be measured until relevance labels include
+candidates outside the displayed pool.
 
 ## Next Technical Milestones
 
 The next useful improvements are:
 
-- Add a designed retrieval-mode UI for subject, global visual, and local-detail
-  modes.
-- Collect human judgments before introducing weighted CLIP/DINO score fusion.
-- Add visual patch overlays for MaxSim diagnostics.
-- Add score diagnostics to the gallery demo so ranking behavior is easier to
-  inspect.
-- Add a lightweight local web UI for browsing, querying, and duplicate review.
-- Introduce an ANN index once the corpus grows beyond brute-force comfort.
+* Add a lightweight local service for CLIP text-delta sliders and exemplar facet
+controls.
+* Evaluate strict MaxSim against top-N patch aggregation with saved judgments.
+* Measure pooled-shortlist recall using labels outside the displayed top-k.
+* Add patch correspondence overlays for result-level explanation.
+* Introduce an ANN index once the corpus grows beyond brute-force comfort.
 
 ## Resume-Relevant Framing
 
