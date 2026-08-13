@@ -20,6 +20,8 @@ package "Airflow 3 Control Plane" {
 package "Daily Python Data Plane" {
   component "HTTPX pooled async client\ntimeouts, limits, retries" as HTTPX
   component "SigLIP pipeline\nclassify, route, import" as Pipeline
+  component "CLIP + DINO feature job\nglobal vectors + patch matrices" as Embeddings
+  component "Qdrant publisher\nsafe/demo policy + alias promotion" as QdrantPublisher
   component "Polars lazy ETL\nJSONL to Parquet" as Polars
   component "s3fs object adapter\nimmutable SHA-256 keys" as S3FS
 }
@@ -37,6 +39,7 @@ package "Private Local Working State" {
 }
 
 cloud "S3-compatible durable storage\nAWS S3 / B2 / R2" as S3
+database "Qdrant serving index\nCLIP + DINO named HNSW vectors" as Qdrant
 
 Operator --> IntakeDAG : trigger / inspect
 Operator --> AuditDAG : trigger / inspect
@@ -48,6 +51,12 @@ HTTPX --> Bluesky
 Pipeline --> JSONL
 Pipeline --> Raw : ACCEPT only
 Pipeline --> SQLite
+IntakeDAG --> Embeddings
+SQLite --> Embeddings : current accepted corpus
+Embeddings --> SQLite : pinned vectors + patches
+IntakeDAG --> QdrantPublisher
+SQLite --> QdrantPublisher : safe + demo-approved vectors
+QdrantPublisher --> Qdrant : idempotent sync + prune
 IntakeDAG --> Polars
 JSONL --> Polars
 Polars --> LocalParquet
@@ -71,6 +80,12 @@ end note
 note bottom of Spark
   Spark is an offline reconciliation/backfill engine,
   not part of per-image inference or online retrieval.
+end note
+
+note bottom of Qdrant
+  Derived and rebuildable from SQLite.
+  CLIP and DINO stay separate through ANN recall and RRF.
+  DINO patch MaxSim runs only over the fused shortlist.
 end note
 
 @enduml

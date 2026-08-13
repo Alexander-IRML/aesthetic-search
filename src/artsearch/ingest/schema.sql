@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS artworks (
     file_hash       TEXT,
     phash           TEXT,
     is_sfw          INTEGER,
+    demo_eligible   INTEGER NOT NULL DEFAULT 0
+        CHECK (demo_eligible IN (0, 1)),
     validated       INTEGER DEFAULT 0,
     review_status   TEXT NOT NULL DEFAULT 'unreviewed'
         CHECK (review_status IN (
@@ -148,10 +150,22 @@ CREATE TABLE IF NOT EXISTS artwork_objects (
     PRIMARY KEY (artwork_id, role)
 );
 
+CREATE TABLE IF NOT EXISTS vector_index_points (
+    collection_name TEXT NOT NULL,
+    artwork_id      TEXT NOT NULL REFERENCES artworks(artwork_id),
+    point_id        TEXT NOT NULL,
+    content_hash    TEXT NOT NULL,
+    indexed_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (collection_name, artwork_id),
+    UNIQUE (collection_name, point_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_artworks_artist ON artworks(artist_id);
 CREATE INDEX IF NOT EXISTS idx_artworks_file_hash ON artworks(file_hash);
 CREATE INDEX IF NOT EXISTS idx_artworks_phash ON artworks(phash);
 CREATE INDEX IF NOT EXISTS idx_artworks_review_status ON artworks(review_status);
+CREATE INDEX IF NOT EXISTS idx_artworks_demo_policy
+    ON artworks(demo_eligible, is_sfw, validated);
 CREATE INDEX IF NOT EXISTS idx_embeddings_models
     ON embeddings(model_name_dino, model_version_dino, model_name_clip, model_version_clip);
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id);
@@ -163,3 +177,5 @@ CREATE INDEX IF NOT EXISTS idx_filter_routes_candidate
     ON artwork_filter_routes(candidate_id, target, status);
 CREATE INDEX IF NOT EXISTS idx_artwork_objects_hash
     ON artwork_objects(content_sha256);
+CREATE INDEX IF NOT EXISTS idx_vector_index_points_artwork
+    ON vector_index_points(artwork_id);

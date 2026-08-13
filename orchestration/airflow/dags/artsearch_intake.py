@@ -188,6 +188,46 @@ with DAG(
             )
         return {**run, "corpus_publish": corpus.to_dict()}
 
+    @task(execution_timeout=timedelta(hours=12))
+    def generate_retrieval_embeddings(run: dict[str, object]) -> dict[str, object]:
+        from artsearch.embed.pipeline import generate_embeddings
+
+        params = get_current_context()["params"]
+        summary = generate_embeddings(_project_path(str(params["app_config"])))
+        if summary["errors"]:
+            raise RuntimeError(
+                f"retrieval embedding generation had isolated errors: {summary['errors']}"
+            )
+        return {**run, "embedding_summary": summary}
+
+    @task(execution_timeout=timedelta(hours=4))
+    def sync_qdrant_index(run: dict[str, object]) -> dict[str, object]:
+        from artsearch.ingest.config import load_config
+        from artsearch.ingest.db import connect
+        from artsearch.production.config import load_production_config
+        from artsearch.retrieval.qdrant import (
+            build_qdrant_client,
+            sync_qdrant_from_sqlite,
+        )
+
+        params = get_current_context()["params"]
+        production = load_production_config(_project_path(str(params["production_config"])))
+        if not production.qdrant.enabled:
+            return {**run, "qdrant_summary": {"enabled": False, "skipped": True}}
+        app = load_config(_project_path(str(params["app_config"])))
+        client = build_qdrant_client(production.qdrant)
+        try:
+            with connect(app.database_path) as connection:
+                result = sync_qdrant_from_sqlite(
+                    connection,
+                    app,
+                    production.qdrant,
+                    client,
+                )
+        finally:
+            client.close()
+        return {**run, "qdrant_summary": {"enabled": True, **result.to_dict()}}
+
     @task
     def build_data_products(run: dict[str, object]) -> dict[str, object]:
         from artsearch.ingest.config import load_config
@@ -246,6 +286,8 @@ with DAG(
             "pipeline_summary": run["pipeline_summary"],
             "manifest_summary": run["manifest_summary"],
             "metrics_summary": run["metrics_summary"],
+            "embedding_summary": run["embedding_summary"],
+            "qdrant_summary": run["qdrant_summary"],
             "artifacts": artifact_refs,
             "corpus_publish": run["corpus_publish"],
         }
@@ -266,6 +308,11 @@ with DAG(
             "manifest_uri": artifact_refs["manifest"]["uri"],
             "accepted_published": run["corpus_publish"]["published"],
             "accepted_unchanged": run["corpus_publish"]["unchanged"],
+            "qdrant_points": run["qdrant_summary"].get("remote_count", 0),
         }
 
-    publish_run(build_data_products(publish_originals(collect_and_filter(prepare_run()))))
+    collected = collect_and_filter(prepare_run())
+    published = publish_originals(collected)
+    embedded = generate_retrieval_embeddings(published)
+    indexed = sync_qdrant_index(embedded)
+    publish_run(build_data_products(indexed))

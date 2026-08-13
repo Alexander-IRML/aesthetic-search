@@ -2,8 +2,8 @@
 
 Data preparation and baseline visual search pipeline for artwork.
 
-Current release: **v0.3.1**. See the
-[v0.3.1 release notes](docs/releases/v0.3.1.md) for the production data-platform
+Current release: **v0.3.2**. See the
+[v0.3.2 release notes](docs/releases/v0.3.2.md) for the Qdrant retrieval-serving
 integration and verification record.
 
 The current MVP ingests explicitly registered artist folders from `data/raw/`,
@@ -27,6 +27,9 @@ slice is documented in
 [docs/production_data_platform.md](docs/production_data_platform.md), with its
 component flow in
 [docs/production_data_platform.puml](docs/production_data_platform.puml).
+The Qdrant named-vector schema, safety gate, CLIP/DINO fusion funnel, sync and
+repair behavior, ANN evaluation, and local/Cloud runbook are in
+[docs/qdrant_retrieval.md](docs/qdrant_retrieval.md).
 
 ## Local Workflow
 
@@ -70,6 +73,21 @@ The intake DAG orchestrates the existing Bluesky/SigLIP pipeline, Polars
 manifest and metrics builds, and immutable accepted-original/run publication.
 The separate Spark DAG reconciles all historical Parquet manifests and emits
 corpus quality, duplicate, artist, and decision reports.
+
+Qdrant provides the scalable retrieval-serving layer while SQLite remains
+canonical. Start the local service and inspect eligibility before syncing:
+
+```bash
+python -m pip install -e '.[qdrant]'
+docker compose -f orchestration/airflow/compose.yaml up -d qdrant
+artsearch-qdrant eligibility
+artsearch-qdrant sync
+artsearch-qdrant evaluate-ann --sample-size 50 --top-k 20
+```
+
+Only explicitly `demo_eligible` and SFW artwork enters Qdrant. Existing artwork
+starts demo-ineligible; SigLIP artwork acceptance is not treated as a safety
+decision.
 
 Embedding generation uses optional ML dependencies:
 

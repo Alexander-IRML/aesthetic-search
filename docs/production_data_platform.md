@@ -18,6 +18,7 @@ code as ordinary Python services.
 | s3fs | Provider-neutral adapter for AWS S3, Backblaze B2, R2, or local-compatible testing | Credentials stay in the AWS environment/profile chain |
 | Apache Airflow | Scheduling, dependencies, retries, task history, run parameters, and compact XCom summaries | Does not replace per-item idempotency or canonical metadata |
 | Apache Spark | Corpus-wide reconciliation, duplicate audits, artist/decision aggregation, and large backfills over all manifests | Does not sit in the image-download or SigLIP hot path |
+| Qdrant | Derived online ANN index with separate CLIP subject and DINO global vectors, metadata filtering, aliases, and RRF fusion | Does not replace SQLite, object storage, embedding generation, or patch reranking |
 
 This split is intentional. At the approved intake rate, Polars is simpler and
 faster to operate for one run. Spark becomes useful when reading many immutable
@@ -36,6 +37,12 @@ Airflow artsearch_bluesky_intake
        -> rules + SigLIP classification
        -> ACCEPT originals in local working cache
        -> decisions/routes/artworks in SQLite
+    -> pinned retrieval feature job
+       -> CLIP subject + DINO global + DINO patch embeddings in SQLite
+    -> Qdrant reconciliation
+       -> explicit safe + demo-approved rows only
+       -> named CLIP/DINO HNSW vectors + compact filter payload
+       -> stable read alias promoted after exact count verification
     -> Polars latest-source/latest-decision join
        -> corpus-manifest.parquet
        -> intake-metrics.parquet
@@ -131,7 +138,9 @@ Neither config template nor application logging contains credentials.
 ## Airflow Development Stack
 
 Airflow and Spark are isolated from the Python 3.14 ML environment. The image
-uses Airflow 3.3 on Python 3.12, Java 17, PySpark 4.2, Polars, and s3fs.
+uses Airflow 3.3 on Python 3.12, Java 17, PySpark 4.2, Polars, s3fs, the pinned
+ML dependencies, and qdrant-client. The development Compose stack also runs a
+pinned single-node Qdrant service with rebuildable storage under `data/qdrant/`.
 
 ```bash
 AIRFLOW_UID="$(id -u)" docker compose \
@@ -185,9 +194,12 @@ PostgreSQL when remote workers or operational load justify it.
 
 The ordinary project suite validates the HTTP config, object-store contracts,
 SQLite publication checkpoint/repair behavior, and real Polars lazy
-JSONL-to-Parquet processing. Airflow DAGs and the Spark job are syntax-checked
-in this workspace. Their runtime integration requires Docker/Java, which is
-provided by the checked-in image rather than the host environment.
+JSONL-to-Parquet processing. It also exercises Qdrant collection validation,
+safe/idempotent reconciliation, drift repair, dual-vector RRF retrieval, patch
+reranking, and ANN recall measurement against an exact search using Qdrant's
+in-process test engine. Airflow DAGs and the Spark job are syntax-checked in
+this workspace. Their container runtime integration requires Docker/Java,
+which is provided by the checked-in image rather than the host environment.
 
 ## Resume-Accurate Description
 
@@ -211,3 +223,4 @@ throughput until those runs and measurements actually exist.
   and [connection resource limits](https://www.python-httpx.org/advanced/resource-limits/)
 - [s3fs documentation](https://s3fs.readthedocs.io/en/latest/)
 - [Hadoop S3A connector](https://hadoop.apache.org/docs/current/hadoop-aws/tools/hadoop-aws/)
+- [Qdrant retrieval integration](qdrant_retrieval.md)

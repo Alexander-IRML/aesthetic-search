@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aesthetic-search"
-version = "0.3.1"
+version = "0.3.2"
 description = "Data preparation pipeline for ArtSearch visual similarity search."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -32,11 +32,15 @@ data = [
     "polars>=1.37.0,<2.0.0",
     "s3fs>=2025.3.0,<2027.0.0",
 ]
+qdrant = [
+    "qdrant-client>=1.18.0,<1.19.0",
+]
 spark = [
     "pyspark>=4.1.0,<4.3.0",
 ]
 dev = [
     "pytest>=8.0.0",
+    "qdrant-client>=1.18.0,<1.19.0",
     "ruff>=0.5.0",
 ]
 
@@ -55,6 +59,7 @@ artsearch-bluesky-collect = "artsearch.bluesky.cli:main"
 artsearch-bluesky-pipeline = "artsearch.bluesky_pipeline_cli:main"
 artsearch-rebuild-bluesky-corpus = "artsearch.bluesky_corpus_cli:main"
 artsearch-data = "artsearch.production.cli:main"
+artsearch-qdrant = "artsearch.retrieval.qdrant_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/artsearch"]

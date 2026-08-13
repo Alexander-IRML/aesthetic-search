@@ -35,8 +35,12 @@ def test_airflow_container_has_isolated_supported_runtime() -> None:
     assert "apache/airflow:3.3.0-python3.12" in dockerfile
     assert "openjdk-17-jre-headless" in dockerfile
     assert '"pyspark==4.2.0"' in dockerfile
+    assert '".[data,embed,filter,qdrant]"' in dockerfile
     assert service["environment"]["AIRFLOW__CORE__LOAD_EXAMPLES"] == "false"
+    assert service["environment"]["QDRANT_URL"] == "${QDRANT_URL:-http://qdrant:6333}"
     assert "../../data:/opt/artsearch/data" in service["volumes"]
+    assert compose["services"]["qdrant"]["image"] == "qdrant/qdrant:v1.18.2"
+    assert "../../data/qdrant:/qdrant/storage" in compose["services"]["qdrant"]["volumes"]
 
 
 def test_docker_context_excludes_private_corpus_and_local_secrets() -> None:

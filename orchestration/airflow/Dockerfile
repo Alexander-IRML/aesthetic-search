@@ -12,6 +12,6 @@ COPY --chown=airflow:root . /opt/artsearch
 
 USER airflow
 WORKDIR /opt/artsearch
-RUN pip install --no-cache-dir --editable ".[data]" \
+RUN pip install --no-cache-dir --editable ".[data,embed,filter,qdrant]" \
     "apache-airflow-providers-apache-spark==6.3.0" \
     "pyspark==4.2.0"

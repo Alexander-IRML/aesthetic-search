@@ -18,9 +18,35 @@ def connect(database_path: str | Path) -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
+    # Schema-level indexes may reference columns introduced by a migration.
+    # Add those columns before executing the current idempotent schema on an
+    # existing database; a new database gets them from CREATE TABLE below.
+    if _table_exists(conn, "artworks"):
+        _ensure_column(
+            conn,
+            "artworks",
+            "demo_eligible",
+            "INTEGER NOT NULL DEFAULT 0 CHECK (demo_eligible IN (0, 1))",
+        )
     conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
     _ensure_column(conn, "artists", "source_platform", "TEXT DEFAULT 'manual'")
+    _ensure_column(
+        conn,
+        "artworks",
+        "demo_eligible",
+        "INTEGER NOT NULL DEFAULT 0 CHECK (demo_eligible IN (0, 1))",
+    )
     conn.commit()
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        is not None
+    )
 
 
 def _ensure_column(
@@ -29,10 +55,7 @@ def _ensure_column(
     column_name: str,
     column_definition: str,
 ) -> None:
-    columns = {
-        row["name"]
-        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-    }
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
     if column_name not in columns:
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
 

@@ -33,6 +33,7 @@ package "Command-line surfaces" #F4F5F7 {
   component "Artwork-filter CLI\nclassify / review / evaluate / calibrate" as FilterCLI #E8F2FF
   component "Embedding CLI" as EmbedCLI #E8F2FF
   component "Retrieval and demo CLIs\nsearch / gallery / diagnostics" as RetrievalCLI #E8F2FF
+  component "Qdrant CLI\npolicy / sync / ANN eval / search" as QdrantCLI #E8F2FF
 }
 
 package "Collection and ingestion" #F8FAFC {
@@ -65,8 +66,9 @@ package "Review and model evaluation" #F8FAFC {
 package "Embedding and retrieval" #F8FAFC {
   component "Embedding pipeline\nvalidated processed artwork batches" as EmbedPipeline #FDECEC
   component "CLIP + DINOv2 provider\nsubject, pooled, patch features" as EmbeddingModels #FDECEC
-  component "Two-stage retrieval ensemble\nDINO pooled shortlist -> patch rerank" as Retrieval #FDECEC
-  component "Parallel semantic lens\nCLIP score + rank evidence" as SemanticLens #FDECEC
+  component "Qdrant serving publisher\nsafe/demo policy + model lineage" as QdrantPublisher #FDECEC
+  component "CLIP + DINO ANN ensemble\nnamed vectors -> reciprocal-rank fusion" as Retrieval #FDECEC
+  component "DINO patch precision stage\nshortlist-only exact MaxSim" as PatchReranker #FDECEC
   component "Exploration direction math\nmean delta / shift / orthogonalize" as Directions #FDECEC
   component "Retrieval workbench\nbrowse + human relevance evaluation" as Demo #FDECEC
   component "Retrieval evaluator\nP@K / MRR / MAP / nDCG" as RetrievalEvaluation #FDECEC
@@ -79,6 +81,7 @@ package "Versioned configuration" #F4F5F7 {
   artifact "configs/bluesky.default.toml" as BlueskyConfig
   artifact "configs/artwork_filter.default.toml" as FilterConfig
   artifact "configs/artwork_filter.prompts.v1.toml" as PromptConfig
+  artifact "configs/production.default.toml\nobject store + Qdrant serving policy" as ProductionConfig
 }
 
 package "Local private data boundary (Git-ignored)" #FFF8E7 {
@@ -93,6 +96,7 @@ package "Local private data boundary (Git-ignored)" #FFF8E7 {
   file "data/filter/review/*.csv\ndata/filter/labels/*.jsonl\ndata/filter/reports/*" as ReviewArtifacts
   file "data/retrieval/judgments*.jsonl\ndata/retrieval/evaluation*.json" as RetrievalArtifacts
   database "data/artsearch.db\nSQLite metadata + vectors" as SQLite
+  database "data/qdrant/\nrebuildable local serving index" as Qdrant #FFF8E7
   file "data/search_*.html\nlocal result galleries" as HTMLFiles
 }
 
@@ -103,6 +107,7 @@ Operator --> RebuildCLI
 Operator --> FilterCLI
 Operator --> EmbedCLI
 Operator --> RetrievalCLI
+Operator --> QdrantCLI
 Operator --> ReviewArtifacts : annotates CSV
 HTMLFiles --> Operator : viewed locally
 
@@ -176,17 +181,25 @@ AppConfig ..> ManualIngest
 AppConfig ..> CorpusStore
 AppConfig ..> EmbedPipeline
 AppConfig ..> Retrieval
+ProductionConfig ..> QdrantPublisher
+ProductionConfig ..> Retrieval
 BlueskyConfig ..> BlueskyCollector
 EmbedPipeline --> ProcessedFiles : reads validated images
 EmbedPipeline --> SQLite : reads artworks; upserts embeddings
 EmbedPipeline --> EmbeddingModels
 EmbeddingModels --> HuggingFace : lazy CLIP/DINO checkpoints
+EmbedPipeline --> QdrantPublisher : current global vectors
+SQLite --> QdrantPublisher : safety + demo policy
+QdrantPublisher --> Qdrant : idempotent upsert/prune\nthen alias promotion
 
 RetrievalCLI --> Retrieval
+QdrantCLI --> QdrantPublisher
+QdrantCLI --> Retrieval
 RetrievalCLI --> BlueskyGallery : open-gallery --source bluesky
-Retrieval --> SQLite : Stage 1 global vectors\nStage 2 shortlisted patches only
-Retrieval --> SemanticLens : CLIP evidence only\ndoes not alter final order
-Directions --> SemanticLens : subject + named-medium axes
+Retrieval --> Qdrant : parallel CLIP subject +\nDINO global HNSW retrieval
+Retrieval --> PatchReranker : fused shortlist
+PatchReranker --> SQLite : shortlisted DINO patches only
+Directions --> Retrieval : subject + named-medium axes
 Directions --> Retrieval : optional unnameable pooled facets
 Retrieval --> Demo
 Demo --> ProcessedFiles : local image references
@@ -206,7 +219,8 @@ note bottom of SQLite
   runs, run_events,
   artwork_filter_decisions,
   artwork_filter_routes,
-  artwork_objects
+  artwork_objects,
+  vector_index_points
 end note
 
 note bottom of ReviewArtifacts
@@ -423,6 +437,8 @@ entity artworks {
   phash : TEXT?
   validated : INTEGER
   review_status : TEXT
+  is_sfw : INTEGER?
+  demo_eligible : INTEGER
   duplicate_of : TEXT? <<FK self>>
   transform_fields : scale / pad / crop
 }
@@ -498,6 +514,15 @@ entity artwork_objects {
   verified_at : TEXT
 }
 
+entity vector_index_points {
+  * collection_name : TEXT <<PK>>
+  * artwork_id : TEXT <<PK, FK>>
+  --
+  point_id : TEXT <<UNIQUE per collection>>
+  content_hash : TEXT
+  indexed_at : TEXT
+}
+
 artists ||--o{ artworks : owns
 artworks ||--o| embeddings : has
 runs ||--o{ run_events : records
@@ -506,6 +531,7 @@ artworks o|--o{ artworks : duplicate_of
 artwork_filter_decisions ||--o| artwork_filter_routes : routes
 artworks o|--o{ artwork_filter_routes : imported as
 artworks ||--o| artwork_objects : published as
+artworks ||--o{ vector_index_points : indexed as
 
 note bottom of artwork_filter_decisions
   JSONL remains the append-only offline decision stream.
@@ -520,6 +546,11 @@ end note
 note bottom of artwork_objects
   Checkpoints immutable local or S3-compatible originals.
   Missing objects are repaired from the accepted working cache.
+end note
+
+note bottom of vector_index_points
+  Idempotency ledger for the derived Qdrant serving index.
+  Qdrant remains rebuildable from current SQLite vectors and policy.
 end note
 
 @enduml

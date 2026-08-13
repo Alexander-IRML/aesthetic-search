@@ -1,4 +1,12 @@
 services:
+  qdrant:
+    image: qdrant/qdrant:v1.18.2
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - ../../data/qdrant:/qdrant/storage
+    restart: unless-stopped
+
   airflow:
     build:
       context: ../..
@@ -19,6 +27,8 @@ services:
       AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-}"
       AWS_SESSION_TOKEN: "${AWS_SESSION_TOKEN:-}"
       AWS_DEFAULT_REGION: "${AWS_DEFAULT_REGION:-us-east-1}"
+      QDRANT_URL: "${QDRANT_URL:-http://qdrant:6333}"
+      QDRANT_API_KEY: "${QDRANT_API_KEY:-}"
       HF_HOME: /opt/artsearch/data/cache/huggingface
       TORCH_HOME: /opt/artsearch/data/cache/torch
     volumes:
@@ -26,4 +36,7 @@ services:
       - ../../config:/opt/artsearch/config:ro
       - ../../configs:/opt/artsearch/configs:ro
       - ./state:/opt/airflow
+    depends_on:
+      qdrant:
+        condition: service_started
     restart: unless-stopped

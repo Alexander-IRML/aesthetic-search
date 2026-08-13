@@ -1,7 +1,6 @@
-version = "1.0.0"
+version = "1.1.0"
 
 [object_store]
-# Use "s3" for AWS S3, Backblaze B2, Cloudflare R2, or another compatible store.
 provider = "local"
 local_root = "data/object_store"
 bucket = ""
@@ -14,14 +13,13 @@ local_dir = "data/production/manifests"
 object_prefix = "manifests"
 
 [qdrant]
-# The checked-in development stack supplies this local service. Qdrant Cloud
-# uses the separate example config and environment-provided credentials.
-# QDRANT_URL overrides this URL; QDRANT_API_KEY is never stored in this file.
+# Copy this file to configs/production.qdrant-cloud.local.toml. The local copy
+# is ignored. Export QDRANT_URL and QDRANT_API_KEY in the runtime environment.
 enabled = true
-url = "http://localhost:6333"
+url = ""
 url_env = "QDRANT_URL"
 api_key_env = "QDRANT_API_KEY"
-require_api_key = false
+require_api_key = true
 collection_name = "artworks_clip3_dino1_v1"
 alias_name = "artworks_active"
 clip_vector_name = "clip_subject"

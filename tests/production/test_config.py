@@ -5,7 +5,11 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from artsearch.production.config import ObjectStoreConfig, load_production_config
+from artsearch.production.config import (
+    ObjectStoreConfig,
+    QdrantConfig,
+    load_production_config,
+)
 from artsearch.production.object_store import LocalObjectStore, build_object_store
 
 
@@ -41,6 +45,15 @@ object_prefix = "manifests"
     second_path = second_root / "configs/production.toml"
     second_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
     assert load_production_config(second_path).config_hash == config.config_hash
+
+
+def test_qdrant_config_validates_serving_funnel() -> None:
+    with pytest.raises(ValidationError, match="must differ"):
+        QdrantConfig(collection_name="same", alias_name="same")
+    with pytest.raises(ValidationError, match="fusion_limit"):
+        QdrantConfig(prefetch_limit=10, fusion_limit=11)
+    with pytest.raises(ValidationError, match="patch_rerank_limit"):
+        QdrantConfig(prefetch_limit=10, fusion_limit=10, patch_rerank_limit=11)
 
 
 def test_s3_config_requires_bucket_and_https() -> None:

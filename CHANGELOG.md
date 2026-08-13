@@ -3,6 +3,57 @@
 Project changes worth remembering live here. Keep entries concise and focused on
 what changed, why it matters, and any verification that was done.
 
+## v0.3.2 - 2026-08-13
+
+### Highlights
+
+- Added a rebuildable Qdrant serving index while retaining SQLite as the
+  canonical corpus and embedding store.
+- Added scalable semantic-visual retrieval with separate CLIP subject and DINO
+  global HNSW recall, reciprocal-rank fusion, and shortlisted DINO patch MaxSim
+  reranking.
+
+### Added
+
+- Added versioned named-vector collection creation, stable alias promotion,
+  float16 storage, compact metadata payloads, and strict model-lineage checks.
+- Added idempotent SQLite-to-Qdrant synchronization with content hashes, stale
+  point pruning, remote drift repair, exact count verification, and the
+  `vector_index_points` publication ledger.
+- Added `artsearch-qdrant` commands for configuration inspection, explicit
+  safety/demo policy, collection lifecycle, sync, status, image/text search,
+  and ANN recall/latency evaluation against exact Qdrant search.
+- Added the pinned local Qdrant service and CLIP/DINO embedding plus index sync
+  stages to the Airflow development stack.
+- Added local and Qdrant Cloud configuration templates, an operator runbook,
+  and updated application/data-platform architecture diagrams.
+
+### Safety And Privacy
+
+- Added an independent `demo_eligible` policy flag. Qdrant requires both an
+  explicit safe judgment and explicit demo approval; SigLIP acceptance does not
+  imply either one.
+- Existing rows migrate to demo-ineligible. The current 117-artwork corpus is
+  safety-unknown and therefore produced zero serving points in the live-metadata
+  smoke check.
+- Kept images, SQLite databases, embedding artifacts, local Qdrant storage,
+  credentials, and local Cloud configuration outside Git.
+
+### Verified
+
+- `python -m pytest -q`: 130 tests passed.
+- `python -m ruff check .`: all checks passed.
+- Changed Python files passed `ruff format --check`, compile checks passed, and
+  Git whitespace checks passed.
+- In-process Qdrant tests covered collection compatibility, model lineage,
+  aliasing, idempotent sync, pruning, drift repair, CLIP/DINO RRF, DINO patch
+  reranking, artist diversity, and ANN evaluation.
+- The installed CLI completed a real-corpus eligibility report and a zero-point
+  in-memory reconciliation without publishing unreviewed artwork.
+
+See [the detailed v0.3.2 release notes](docs/releases/v0.3.2.md) for the full
+retrieval contract and runtime boundaries.
+
 ## v0.3.1 - 2026-08-13
 
 ### Highlights
