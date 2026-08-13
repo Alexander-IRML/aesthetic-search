@@ -220,6 +220,7 @@ __marimo__/
 # ArtSearch generated data
 config/artists.local.yaml
 config/bluesky_*.local.txt
+configs/*.local.toml
 # Corpus-specific reports can contain source handles and local evaluation data.
 docs/retrieval_system_analysis_*.md
 # Treat the entire data tree as a private/generated boundary by default.
@@ -238,5 +239,9 @@ data/*.db-*
 
 # Local model artifacts
 models/artwork_filter/*
+
+# Local Airflow metadata, logs, and standalone credentials
+orchestration/airflow/state/*
+!orchestration/airflow/state/.gitkeep
 !models/artwork_filter/.gitkeep
 !models/artwork_filter/README.txt

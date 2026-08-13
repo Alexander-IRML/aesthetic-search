@@ -146,9 +146,13 @@ class HttpOrLocalImageLoader:
     def _http_client(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
-                timeout=self.config.downloads.timeout_seconds,
+                timeout=httpx.Timeout(self.config.downloads.timeout_seconds),
                 headers={"User-Agent": self.config.downloads.user_agent},
                 follow_redirects=False,
+                limits=httpx.Limits(
+                    max_connections=self.config.downloads.max_concurrency,
+                    max_keepalive_connections=self.config.downloads.max_concurrency,
+                ),
                 transport=self._transport,
             )
         return self._client

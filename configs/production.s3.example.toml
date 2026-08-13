@@ -1,0 +1,15 @@
+version = "1.0.0"
+
+[object_store]
+# Works with AWS S3 and compatible services such as Backblaze B2 or Cloudflare R2.
+# Credentials come from AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, never this file.
+provider = "s3"
+local_root = "data/object_store"
+bucket = "YOUR_BUCKET"
+prefix = "artsearch"
+endpoint_url = "https://s3.YOUR_REGION.backblazeb2.com"
+region = "YOUR_REGION"
+
+[manifests]
+local_dir = "data/production/manifests"
+object_prefix = "manifests"

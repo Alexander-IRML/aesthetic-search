@@ -1,4 +1,4 @@
-' ArtSearch architecture as implemented through 2026-08-02.
+' ArtSearch architecture as implemented through 2026-08-13.
 ' Render all diagrams with:
 '   plantuml docs/artsearch_architecture.puml
 '
@@ -205,7 +205,8 @@ note bottom of SQLite
   artists, artworks, embeddings,
   runs, run_events,
   artwork_filter_decisions,
-  artwork_filter_routes
+  artwork_filter_routes,
+  artwork_objects
 end note
 
 note bottom of ReviewArtifacts
@@ -484,6 +485,19 @@ entity artwork_filter_routes {
   hashes_dimensions_errors : fields
 }
 
+entity artwork_objects {
+  * artwork_id : TEXT <<PK, FK>>
+  * role : original <<PK>>
+  --
+  object_key : TEXT
+  object_uri : TEXT
+  content_sha256 : TEXT
+  byte_size : INTEGER
+  etag : TEXT?
+  published_at : TEXT
+  verified_at : TEXT
+}
+
 artists ||--o{ artworks : owns
 artworks ||--o| embeddings : has
 runs ||--o{ run_events : records
@@ -491,6 +505,7 @@ artworks o|--o{ run_events : referenced by
 artworks o|--o{ artworks : duplicate_of
 artwork_filter_decisions ||--o| artwork_filter_routes : routes
 artworks o|--o{ artwork_filter_routes : imported as
+artworks ||--o| artwork_objects : published as
 
 note bottom of artwork_filter_decisions
   JSONL remains the append-only offline decision stream.
@@ -500,6 +515,11 @@ end note
 note bottom of embeddings
   Vectors are stored as normalized NumPy-compatible BLOBs.
   Search only loads rows matching configured model versions.
+end note
+
+note bottom of artwork_objects
+  Checkpoints immutable local or S3-compatible originals.
+  Missing objects are repaired from the accepted working cache.
 end note
 
 @enduml

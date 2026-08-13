@@ -3,6 +3,47 @@
 Project changes worth remembering live here. Keep entries concise and focused on
 what changed, why it matters, and any verification that was done.
 
+## v0.3.1 - 2026-08-13
+
+### Highlights
+
+- Added the first production data-platform layer around the existing Bluesky,
+  SigLIP, SQLite, and retrieval pipeline while preserving a single-machine alpha
+  deployment path.
+- Added Airflow orchestration, Polars manifests and intake metrics, immutable
+  local/S3-compatible corpus publication, and a separate Spark corpus-audit job.
+
+### Added
+
+- Added run-scoped intake and corpus-audit DAGs with retries, bounded failure
+  behavior, and explicit handoffs between collection, filtering, publication,
+  manifests, and metrics.
+- Added SHA-256-addressed local and S3-compatible object stores, publication
+  verification, canonical duplicate reuse, and SQLite `artwork_objects`
+  checkpoints.
+- Added HTTPX connection-pool controls for Bluesky and image acquisition.
+- Added Python 3.12, Airflow 3.3, Java 17, and PySpark 4.2 development assets,
+  plus capacity, implementation, operations, and architecture documentation.
+
+### Privacy
+
+- Kept the entire private `data/` tree, local rosters and S3 settings, Airflow
+  state, downloaded models, and generated corpus artifacts outside Git and the
+  Docker build context.
+- Restricted durable publication to accepted decisions; rejected image bytes
+  are not retained by the new publisher.
+
+### Verified
+
+- `python -m pytest -q`: 122 tests passed.
+- `python -m ruff check .`: all checks passed.
+- All Python files changed for v0.3.1 passed `ruff format --check`.
+- All 1,328 current files under `data/` matched an ignore rule, with no tracked
+  or pending image, database, vector, Parquet, or model artifact found.
+
+See [the detailed v0.3.1 release notes](docs/releases/v0.3.1.md) for the full
+runtime and verification record.
+
 ## v0.3.0 - 2026-08-07
 
 ### Highlights

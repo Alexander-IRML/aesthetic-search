@@ -1,0 +1,14 @@
+version = "1.0.0"
+
+[object_store]
+# Use "s3" for AWS S3, Backblaze B2, Cloudflare R2, or another compatible store.
+provider = "local"
+local_root = "data/object_store"
+bucket = ""
+prefix = "artsearch"
+endpoint_url = ""
+region = ""
+
+[manifests]
+local_dir = "data/production/manifests"
+object_prefix = "manifests"

@@ -48,7 +48,11 @@ class BlueskyClient:
         self._client = http_client or httpx.AsyncClient(
             base_url=config.api.base_url,
             headers={"User-Agent": config.api.user_agent},
-            timeout=config.api.timeout_seconds,
+            timeout=httpx.Timeout(config.api.timeout_seconds),
+            limits=httpx.Limits(
+                max_connections=config.api.max_connections,
+                max_keepalive_connections=config.api.max_keepalive_connections,
+            ),
             transport=transport,
         )
 
@@ -184,11 +188,7 @@ def _retry_delay(
 ) -> float:
     retry_after = response.headers.get("retry-after") if response is not None else None
     requested = _retry_after_seconds(retry_after)
-    delay = (
-        requested
-        if requested is not None
-        else config.api.retry_backoff_seconds * (2**attempt)
-    )
+    delay = requested if requested is not None else config.api.retry_backoff_seconds * (2**attempt)
     return min(max(0.0, delay), config.api.retry_backoff_max_seconds)
 
 

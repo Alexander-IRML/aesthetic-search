@@ -2,6 +2,10 @@
 
 Data preparation and baseline visual search pipeline for artwork.
 
+Current release: **v0.3.1**. See the
+[v0.3.1 release notes](docs/releases/v0.3.1.md) for the production data-platform
+integration and verification record.
+
 The current MVP ingests explicitly registered artist folders from `data/raw/`,
 standardizes images into 448x448 JPEGs in `data/processed/`, tracks metadata in
 SQLite, stores CLIP and DINOv2 embeddings, and can generate local HTML search
@@ -12,6 +16,17 @@ For a more detailed technical summary, see
 [docs/mvp_report.md](docs/mvp_report.md).
 The current component map, Bluesky pipeline sequence, and SQLite relationship
 diagram are in [docs/artsearch_architecture.puml](docs/artsearch_architecture.puml).
+The production-scale Qdrant/HNSW, ingestion, hybrid retrieval, and alpha roadmap
+is recorded in
+[docs/production_scale_roadmap.md](docs/production_scale_roadmap.md).
+The researched implementation choices for source synchronization, queues,
+PostgreSQL, object storage, workers, Qdrant, observability, and deployment are in
+[docs/production_intake_implementation_research.md](docs/production_intake_implementation_research.md).
+The implemented Airflow, Spark, Polars, HTTPX, and S3-compatible data-platform
+slice is documented in
+[docs/production_data_platform.md](docs/production_data_platform.md), with its
+component flow in
+[docs/production_data_platform.puml](docs/production_data_platform.puml).
 
 ## Local Workflow
 
@@ -29,6 +44,32 @@ python -m pytest -q
 python -m ruff check .
 python scripts/standardize.py
 ```
+
+Production data products and S3-compatible publication use the `data` extra:
+
+```bash
+python -m pip install -e '.[data]'
+artsearch-data build-manifest \
+  --candidates data/bluesky/image_candidates.jsonl \
+  --decisions data/filter/decisions.jsonl \
+  --database data/artsearch.db \
+  --output data/production/manifests/corpus.parquet
+artsearch-data publish-corpus \
+  --config configs/production.default.toml \
+  --decisions data/filter/decisions.jsonl
+```
+
+Airflow and Spark are isolated in a Python 3.12/Java 17 development image:
+
+```bash
+AIRFLOW_UID="$(id -u)" docker compose \
+  -f orchestration/airflow/compose.yaml up --build
+```
+
+The intake DAG orchestrates the existing Bluesky/SigLIP pipeline, Polars
+manifest and metrics builds, and immutable accepted-original/run publication.
+The separate Spark DAG reconciles all historical Parquet manifests and emits
+corpus quality, duplicate, artist, and decision reports.
 
 Embedding generation uses optional ML dependencies:
 

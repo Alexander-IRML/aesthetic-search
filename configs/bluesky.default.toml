@@ -10,6 +10,8 @@ feed_filter = "posts_with_media"
 max_retries = 4
 retry_backoff_seconds = 0.5
 retry_backoff_max_seconds = 15.0
+max_connections = 20
+max_keepalive_connections = 10
 
 [moderation]
 public_safe_mode = true

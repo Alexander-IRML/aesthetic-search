@@ -1,0 +1,76 @@
+@startuml ArtSearch_Production_Data_Platform
+title ArtSearch Production Data Platform
+
+left to right direction
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam linetype ortho
+skinparam componentStyle rectangle
+skinparam defaultFontName SansSerif
+
+cloud "Bluesky Public AppView" as Bluesky
+actor "Operator" as Operator
+
+package "Airflow 3 Control Plane" {
+  component "Bluesky Intake DAG\nmanual or cron" as IntakeDAG
+  component "Corpus Audit DAG\nmanual or scheduled" as AuditDAG
+  database "Airflow run/task history" as AirflowDB
+}
+
+package "Daily Python Data Plane" {
+  component "HTTPX pooled async client\ntimeouts, limits, retries" as HTTPX
+  component "SigLIP pipeline\nclassify, route, import" as Pipeline
+  component "Polars lazy ETL\nJSONL to Parquet" as Polars
+  component "s3fs object adapter\nimmutable SHA-256 keys" as S3FS
+}
+
+package "Corpus-Scale Batch Plane" {
+  component "Spark 4.2 SQL audit\nlatest-version reconcile" as Spark
+  artifact "decision + artist summaries\nduplicate hashes + quality" as Audits
+}
+
+package "Private Local Working State" {
+  file "Candidate + decision JSONL" as JSONL
+  folder "Accepted raw cache" as Raw
+  database "SQLite corpus + artwork_objects" as SQLite
+  file "Run manifest + metrics Parquet" as LocalParquet
+}
+
+cloud "S3-compatible durable storage\nAWS S3 / B2 / R2" as S3
+
+Operator --> IntakeDAG : trigger / inspect
+Operator --> AuditDAG : trigger / inspect
+IntakeDAG --> AirflowDB
+AuditDAG --> AirflowDB
+IntakeDAG --> Pipeline
+Pipeline --> HTTPX
+HTTPX --> Bluesky
+Pipeline --> JSONL
+Pipeline --> Raw : ACCEPT only
+Pipeline --> SQLite
+IntakeDAG --> Polars
+JSONL --> Polars
+Polars --> LocalParquet
+IntakeDAG --> S3FS
+Raw --> S3FS : accepted originals
+LocalParquet --> S3FS : immutable data products
+JSONL --> S3FS : immutable run evidence
+S3FS --> S3
+S3FS --> SQLite : checkpoint key, URI, hash
+
+AuditDAG --> Spark
+S3 --> Spark : all corpus manifests via S3A
+Spark --> Audits
+Audits --> S3
+
+note bottom of Pipeline
+  REJECT image bytes are discarded.
+  REVIEW downloads remain disabled by default.
+end note
+
+note bottom of Spark
+  Spark is an offline reconciliation/backfill engine,
+  not part of per-image inference or online retrieval.
+end note
+
+@enduml

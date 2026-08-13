@@ -1,0 +1,13 @@
+.git
+.venv
+.env
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+data
+models/artwork_filter
+orchestration/airflow/state
+config/*.local.*
+config/bluesky_*.local.txt
+configs/*.local.toml

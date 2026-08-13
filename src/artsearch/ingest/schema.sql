@@ -135,6 +135,19 @@ CREATE TABLE IF NOT EXISTS artwork_filter_routes (
     UNIQUE(decision_key)
 );
 
+CREATE TABLE IF NOT EXISTS artwork_objects (
+    artwork_id      TEXT NOT NULL REFERENCES artworks(artwork_id),
+    role            TEXT NOT NULL CHECK (role IN ('original')),
+    object_key      TEXT NOT NULL,
+    object_uri      TEXT NOT NULL,
+    content_sha256  TEXT NOT NULL,
+    byte_size       INTEGER NOT NULL,
+    etag            TEXT,
+    published_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+    verified_at     TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (artwork_id, role)
+);
+
 CREATE INDEX IF NOT EXISTS idx_artworks_artist ON artworks(artist_id);
 CREATE INDEX IF NOT EXISTS idx_artworks_file_hash ON artworks(file_hash);
 CREATE INDEX IF NOT EXISTS idx_artworks_phash ON artworks(phash);
@@ -148,3 +161,5 @@ CREATE INDEX IF NOT EXISTS idx_filter_decisions_outcome
     ON artwork_filter_decisions(decision, predicted_class);
 CREATE INDEX IF NOT EXISTS idx_filter_routes_candidate
     ON artwork_filter_routes(candidate_id, target, status);
+CREATE INDEX IF NOT EXISTS idx_artwork_objects_hash
+    ON artwork_objects(content_sha256);

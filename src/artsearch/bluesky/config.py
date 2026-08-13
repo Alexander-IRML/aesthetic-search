@@ -18,6 +18,8 @@ class BlueskyAPIConfig(BaseModel):
     max_retries: int = 4
     retry_backoff_seconds: float = 0.5
     retry_backoff_max_seconds: float = 15.0
+    max_connections: int = 20
+    max_keepalive_connections: int = 10
 
     @field_validator("base_url")
     @classmethod
@@ -49,6 +51,12 @@ class BlueskyAPIConfig(BaseModel):
             raise ValueError("api.retry_backoff_seconds must be non-negative")
         if self.retry_backoff_max_seconds <= 0:
             raise ValueError("api.retry_backoff_max_seconds must be positive")
+        if self.max_connections <= 0:
+            raise ValueError("api.max_connections must be positive")
+        if self.max_keepalive_connections < 0:
+            raise ValueError("api.max_keepalive_connections must be non-negative")
+        if self.max_keepalive_connections > self.max_connections:
+            raise ValueError("api.max_keepalive_connections must not exceed max_connections")
         return self
 
 
