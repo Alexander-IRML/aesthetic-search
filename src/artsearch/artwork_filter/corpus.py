@@ -58,6 +58,9 @@ class CorpusRouter:
         if image_loader is None:
             fullsize_config = config.model_copy(deep=True)
             fullsize_config.downloads.prefer_thumbnail = False
+            fullsize_config.downloads.max_concurrency = (
+                fullsize_config.downloads.fullsize_max_concurrency
+            )
             image_loader = HttpOrLocalImageLoader(fullsize_config)
         self.image_loader = image_loader
 
@@ -81,7 +84,7 @@ class CorpusRouter:
     ) -> list[RoutedImage]:
         if len(candidates) != len(results):
             raise ValueError("candidates and results must have the same length")
-        semaphore = asyncio.Semaphore(self.config.downloads.max_concurrency)
+        semaphore = asyncio.Semaphore(self.config.downloads.fullsize_max_concurrency)
 
         async def route_one(
             candidate: ImageCandidate,

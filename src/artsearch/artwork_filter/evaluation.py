@@ -39,16 +39,24 @@ def evaluate_filter(
         decisions_path,
         labels_path,
     )
+    return evaluate_filter_samples(samples, accounting=accounting)
+
+
+def evaluate_filter_samples(
+    samples: Sequence[EvaluationSample],
+    *,
+    accounting: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """Evaluate already-resolved labels without requiring intermediate JSONL files."""
+
     binary = [sample for sample in samples if _binary_truth(sample.label) is not None]
     multiclass = [
-        sample
-        for sample in samples
-        if sample.label.content_class != HumanContentLabel.UNCERTAIN
+        sample for sample in samples if sample.label.content_class != HumanContentLabel.UNCERTAIN
     ]
 
     report: dict[str, Any] = {
         "dataset": {
-            **accounting,
+            **(accounting or {"latest_labels": len(samples), "matched": len(samples)}),
             "binary_evaluable": len(binary),
             "multiclass_evaluable": len(multiclass),
             "artist_groups": len({_artist_group(sample) for sample in samples}),
@@ -210,11 +218,7 @@ def write_json_report(report: dict[str, Any], path: str | Path) -> None:
 
 def write_threshold_sweep_csv(report: dict[str, Any], path: str | Path) -> None:
     sweep = report.get("sweep", {})
-    rows = [
-        {"kind": kind, **row}
-        for kind in ("accept", "reject")
-        for row in sweep.get(kind, [])
-    ]
+    rows = [{"kind": kind, **row} for kind in ("accept", "reject") for row in sweep.get(kind, [])]
     destination = Path(path)
     fieldnames = (
         "kind",
@@ -290,8 +294,7 @@ def _multiclass_metrics(samples: Sequence[EvaluationSample]) -> dict[str, Any]:
     confusion: dict[str, dict[str, int]] = {}
     for content_class in classes:
         true_positive = sum(
-            truth == content_class and prediction == content_class
-            for truth, prediction in pairs
+            truth == content_class and prediction == content_class for truth, prediction in pairs
         )
         predicted = sum(prediction == content_class for _, prediction in pairs)
         actual = sum(truth == content_class for truth, _ in pairs)
@@ -318,9 +321,7 @@ def _multiclass_metrics(samples: Sequence[EvaluationSample]) -> dict[str, Any]:
         if metrics["f1"] is not None
     )
     weighted_support = sum(
-        metrics["support"]
-        for metrics in per_class.values()
-        if metrics["f1"] is not None
+        metrics["support"] for metrics in per_class.values() if metrics["f1"] is not None
     )
     return {
         "top1_accuracy": accuracy,
@@ -348,7 +349,9 @@ def _artist_macro_metrics(samples: Sequence[EvaluationSample]) -> dict[str, Any]
 def _binary_group_metrics(samples: Sequence[EvaluationSample]) -> dict[str, float | None]:
     truths = [_binary_truth(sample.label) for sample in samples]
     predictions = [sample.decision.decision == FilterDecision.ACCEPT for sample in samples]
-    true_positive = sum(truth is True and prediction for truth, prediction in zip(truths, predictions))
+    true_positive = sum(
+        truth is True and prediction for truth, prediction in zip(truths, predictions)
+    )
     predicted_positive = sum(predictions)
     actual_positive = sum(truth is True for truth in truths)
     precision = _rate(true_positive, predicted_positive)
@@ -372,9 +375,7 @@ def _false_acceptance_by_subtype(samples: Sequence[EvaluationSample]) -> dict[st
     return {
         label: {
             "support": len(group),
-            "accepted": sum(
-                sample.decision.decision == FilterDecision.ACCEPT for sample in group
-            ),
+            "accepted": sum(sample.decision.decision == FilterDecision.ACCEPT for sample in group),
             "rate": _rate(
                 sum(sample.decision.decision == FilterDecision.ACCEPT for sample in group),
                 len(group),
@@ -393,8 +394,7 @@ def _accept_threshold_row(
     accepts = [
         sample
         for sample in samples
-        if _accept_eligible(sample.decision, config)
-        and sample.decision.final_score >= threshold
+        if _accept_eligible(sample.decision, config) and sample.decision.final_score >= threshold
     ]
     correct = sum(_binary_truth(sample.label) is True for sample in accepts)
     positive_total = sum(_binary_truth(sample.label) is True for sample in samples)
@@ -416,9 +416,7 @@ def _reject_threshold_row(
     threshold: float,
 ) -> dict[str, Any]:
     rejects = [
-        sample
-        for sample in samples
-        if _would_reject(sample.decision, config, threshold=threshold)
+        sample for sample in samples if _would_reject(sample.decision, config, threshold=threshold)
     ]
     correct = sum(_binary_truth(sample.label) is False for sample in rejects)
     negative_total = sum(_binary_truth(sample.label) is False for sample in samples)
@@ -443,8 +441,7 @@ def _policy_projection(
     accepts = [
         sample
         for sample in samples
-        if _accept_eligible(sample.decision, config)
-        and sample.decision.final_score >= accept_score
+        if _accept_eligible(sample.decision, config) and sample.decision.final_score >= accept_score
     ]
     rejects = [
         sample
@@ -620,9 +617,7 @@ def _validate_calibration_cohort(
     versions = _versions(samples)
     for field_name, values in versions.items():
         if len(values) > 1:
-            raise ValueError(
-                f"calibration requires one decision cohort; found mixed {field_name}"
-            )
+            raise ValueError(f"calibration requires one decision cohort; found mixed {field_name}")
     if versions["config_hashes"] and versions["config_hashes"][0] != config.config_hash:
         raise ValueError("calibration config does not match the labeled decision cohort")
     if versions["model_versions"] and versions["model_versions"][0] != config.model.model_id:
@@ -643,9 +638,7 @@ def _wilson_interval(successes: int, total: int) -> list[float | None]:
     denominator = 1 + z * z / total
     center = (proportion + z * z / (2 * total)) / denominator
     radius = (
-        z
-        * sqrt(proportion * (1 - proportion) / total + z * z / (4 * total * total))
-        / denominator
+        z * sqrt(proportion * (1 - proportion) / total + z * z / (4 * total * total)) / denominator
     )
     return [max(0.0, center - radius), min(1.0, center + radius)]
 

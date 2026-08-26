@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from io import BytesIO
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from artsearch.production.object_store import (
     content_addressed_key,
     file_identity,
     normalize_object_key,
+    verify_object_store,
 )
 
 
@@ -57,6 +59,16 @@ def test_content_addressed_keys_are_partitioned_and_safe() -> None:
         normalize_object_key("../private")
 
 
+def test_object_store_canary_verifies_round_trip_and_cleans_up(tmp_path: Path) -> None:
+    object_root = tmp_path / "objects"
+    result = verify_object_store(LocalObjectStore(object_root), tmp_path / "canary")
+
+    assert result.write_verified is True
+    assert result.read_verified is True
+    assert result.delete_verified is True
+    assert not any(path.is_file() for path in object_root.rglob("*"))
+
+
 def test_s3_store_uses_prefix_and_verifies_existing_bytes(tmp_path: Path) -> None:
     filesystem = MemoryS3FileSystem()
     config = ObjectStoreConfig(
@@ -79,27 +91,48 @@ def test_s3_store_uses_prefix_and_verifies_existing_bytes(tmp_path: Path) -> Non
     assert repeated.created is False
     assert fetched.sha256 == file_identity(source)[0]
     assert destination.read_bytes() == source.read_bytes()
+    assert filesystem.open_count == 0
+    metadata = filesystem.metadata["artsearch-test/v1/corpus/image.jpg"]
+    assert metadata["Metadata"]["sha256"] == created.sha256
+    assert metadata["ContentType"] == "image/jpeg"
+    assert metadata["ContentMD5"]
 
 
 class MemoryS3FileSystem:
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
+        self.metadata: dict[str, dict[str, object]] = {}
+        self.open_count = 0
 
     def exists(self, path: str) -> bool:
         return path in self.objects
 
     def info(self, path: str) -> dict[str, object]:
-        return {"size": len(self.objects[path]), "ETag": '"test-etag"'}
+        digest = hashlib.md5(self.objects[path], usedforsecurity=False).hexdigest()
+        return {"size": len(self.objects[path]), "ETag": f'"{digest}"'}
 
-    def put_file(self, source: str, destination: str) -> None:
+    def put_file(self, source: str, destination: str, **kwargs: object) -> None:
         self.objects[destination] = Path(source).read_bytes()
+        self.metadata[destination] = dict(kwargs["s3_additional_kwargs"])
 
     def get_file(self, source: str, destination: str) -> None:
         Path(destination).write_bytes(self.objects[source])
 
     def open(self, path: str, mode: str) -> BytesIO:
         assert mode == "rb"
+        self.open_count += 1
         return BytesIO(self.objects[path])
 
     def rm(self, path: str) -> None:
         del self.objects[path]
+        self.metadata.pop(path, None)
+
+    def call_s3(self, method: str, *, Bucket: str, Key: str) -> dict[str, object]:
+        assert method == "head_object"
+        path = f"{Bucket}/{Key}"
+        digest = hashlib.md5(self.objects[path], usedforsecurity=False).hexdigest()
+        return {
+            "ContentLength": len(self.objects[path]),
+            "ETag": f'"{digest}"',
+            **self.metadata[path],
+        }

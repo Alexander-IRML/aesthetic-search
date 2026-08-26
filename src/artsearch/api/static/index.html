@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>ArtSearch Signal Desk</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/search" aria-label="ArtSearch search">
+      <span class="brand-mark">AS</span>
+      <span>ARTSEARCH / SIGNAL DESK</span>
+    </a>
+    <div class="system-state" aria-label="Search mode">
+      <span class="state-light" aria-hidden="true"></span>
+      CLIP SUBJECT + CSD STYLE
+    </div>
+  </header>
+
+  <main class="workbench">
+    <section class="query-panel" aria-labelledby="query-heading">
+      <div class="section-heading">
+        <h1 id="query-heading">Reference image</h1>
+        <span>IMAGE / FUSED</span>
+      </div>
+
+      <form id="search-form">
+        <input
+          id="image-input"
+          name="image"
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          required
+        >
+        <label id="drop-zone" class="drop-zone" for="image-input" tabindex="0">
+          <img id="query-preview" alt="Selected query preview" hidden>
+          <span id="drop-copy" class="drop-copy">
+            <strong>Drop an artwork here</strong>
+            <span>or choose a JPEG, PNG, or WebP up to 10 MB</span>
+          </span>
+          <span class="choose-control">Choose image</span>
+        </label>
+
+        <div id="file-meta" class="file-meta" hidden>
+          <span id="file-name"></span>
+          <button id="clear-file" class="quiet-button" type="button">Clear</button>
+        </div>
+
+        <button id="search-button" class="primary-button" type="submit" disabled>
+          Search similar artwork
+        </button>
+      </form>
+
+      <section class="signal-readout" aria-labelledby="signal-heading">
+        <h2 id="signal-heading">Retrieval signal</h2>
+        <div class="signal-row">
+          <span>SUBJECT</span>
+          <span class="signal-track"><span class="signal-fill subject-fill"></span></span>
+          <span>CLIP</span>
+        </div>
+        <div class="signal-row">
+          <span>STYLE</span>
+          <span class="signal-track"><span class="signal-fill style-fill"></span></span>
+          <span>CSD</span>
+        </div>
+        <p>Rankings are combined with reciprocal-rank fusion. Query images are decoded in memory and not retained.</p>
+      </section>
+    </section>
+
+    <section class="results-panel" aria-labelledby="results-heading">
+      <div class="section-heading results-heading">
+        <h2 id="results-heading">Results</h2>
+        <span id="result-count">00 / 10</span>
+      </div>
+
+      <div id="error-state" class="message-state error-state" role="alert" hidden>
+        <strong id="error-title">Search unavailable</strong>
+        <span id="error-message"></span>
+      </div>
+
+      <div id="empty-state" class="message-state empty-state">
+        <span class="empty-index">01</span>
+        <strong>Choose an artwork to begin.</strong>
+        <span>The ten closest corpus images will appear here.</span>
+      </div>
+
+      <div id="results-grid" class="results-grid" aria-live="polite" aria-busy="false"></div>
+    </section>
+  </main>
+
+  <footer class="statusbar" aria-live="polite">
+    <span id="status-message">READY</span>
+    <span id="query-id">QUERY --------</span>
+    <span id="index-version">INDEX --------</span>
+    <span id="latency">0 MS</span>
+  </footer>
+
+  <template id="result-template">
+    <article class="result-card">
+      <div class="result-image-frame">
+        <span class="result-rank"></span>
+        <img class="result-image" alt="" loading="lazy">
+      </div>
+      <div class="result-details">
+        <div class="artist-line">
+          <strong class="artist-name"></strong>
+          <a class="source-link" target="_blank" rel="noopener noreferrer" hidden>Source</a>
+        </div>
+        <span class="content-class"></span>
+        <div class="score-row" title="CLIP subject similarity">
+          <span>SUBJ</span>
+          <span class="mini-track"><span class="mini-fill subject-score"></span></span>
+          <span class="subject-value"></span>
+        </div>
+        <div class="score-row" title="CSD style similarity">
+          <span>STYLE</span>
+          <span class="mini-track"><span class="mini-fill style-score"></span></span>
+          <span class="style-value"></span>
+        </div>
+        <div class="result-feedback" aria-label="Rate this search result">
+          <span class="feedback-label">MATCH?</span>
+          <div class="feedback-buttons">
+            <button type="button" data-grade="great" aria-pressed="false">Great</button>
+            <button type="button" data-grade="good" aria-pressed="false">Good</button>
+            <button type="button" data-grade="bad" aria-pressed="false">Bad</button>
+          </div>
+          <span class="feedback-status" role="status" aria-live="polite"></span>
+        </div>
+      </div>
+    </article>
+  </template>
+</body>
+</html>

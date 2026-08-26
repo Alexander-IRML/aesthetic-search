@@ -6,6 +6,12 @@ Researched: 2026-08-12
 
 Current baseline: ArtSearch v0.3.1
 
+> **Representation update (2026-08-20):** ADR 0002 supersedes every DINO and
+> patch-storage recommendation in this dated research. The active feature
+> contract is one CLIP subject vector plus one CSD style vector, fused with RRF.
+> Patch sections remain only as the historical analysis that led to removing
+> that storage tier.
+
 Companion architecture: `docs/production_scale_roadmap.md`
 
 Approved capacity and cost profile: `docs/production_capacity_profile.md`
@@ -20,7 +26,7 @@ These product and budget choices were recorded on 2026-08-12:
 | Three-month corpus | 100,000 images |
 | Eight-month corpus | 500,000 images |
 | Twelve-month corpus | 1,000,000 images |
-| Normal first-year intake | About 2,000 candidates/day plus scheduled backfills |
+| Normal first-year intake | Target 5,000 candidates/day plus scheduled backfills |
 | Required peak design rate | 10,000 source candidates/day and 5,000 published images/day |
 | Maintenance intake | About 500 candidates/day |
 | Recurring infrastructure budget | USD 20-50/month, excluding existing local hardware and electricity |
@@ -45,7 +51,13 @@ intake throughput.
 
 ## Executive Recommendation
 
-The USD 20-50/month budget changes the first deployment from managed cloud to a
+> **Decision update (2026-08-19):** the provider recommendation in this research
+> has been superseded by `docs/adr/0001-alpha-cloud-topology.md`. The closed alpha
+> uses R2, Neon, Qdrant Cloud, Modal, and a small control-plane VM so the developer
+> workstation can be fully offline. The implementation analysis below remains a
+> useful record of the alternatives and data contracts considered.
+
+The USD 20-50/month budget originally changed the first deployment from managed cloud to a
 single-node, local-first production pilot:
 
 | Concern | Recommended first choice |
@@ -62,7 +74,7 @@ single-node, local-first production pilot:
 | Burst compute | Existing local compute first; rented GPU work requires separate explicit spend |
 | Vector serving | Local Qdrant OSS with on-disk vectors/indexes and snapshots |
 | Global retrieval | Qdrant named dense vectors plus sparse/text and payload indexes |
-| Patch reranking | Compressed `16x16` artifacts in B2, fetched only for the shortlist into a bounded local cache |
+| Style retrieval | One normalized CSD style vector, independently indexed and fused with CLIP |
 | Telemetry | Durable PostgreSQL attempts plus OpenTelemetry-compatible structured events |
 | Infrastructure | Docker Compose/service units now; cloud adapters and IaC retained as migration targets |
 
@@ -71,7 +83,7 @@ charged against the USD 20-50 recurring budget. Without existing compute and dis
 the million-image, multi-model goal is not credible at that price. The current
 workspace reports about 935 GiB free disk, 8 GiB RAM, and 16 logical CPUs; no
 NVIDIA GPU is visible inside the current WSL environment. The disk is adequate
-only if raw/rejected bytes and full-corpus patch matrices are not retained. The
+only if raw/rejected bytes and per-image patch matrices are not retained. The
 RAM requires on-disk Qdrant storage and model workers that do not keep every
 large model resident simultaneously.
 
@@ -105,8 +117,8 @@ real problems, but the budget and five-user alpha do not pay for them yet.
 - Begin with a PostgreSQL queue, then revisit SQS or Temporal after the first
   durable workflow exposes the real complexity of remote workers, human review,
   and cancellation.
-- Patch compression and quantization should be decided by a quality and latency
-  benchmark; the budget profile keeps patch artifacts outside Qdrant.
+- CSD float16 or quantized serving should be decided by exact-versus-ANN quality
+  and latency benchmarks.
 - Vector quantization should wait for exact-versus-quantized relevance tests.
 - Triton should wait until direct PyTorch workers leave material GPU capacity
   unused or online inference needs dynamic batching across several models.
@@ -126,8 +138,8 @@ Bluesky Tap / AppView / manual upload adapter
     -> decode/validate/canonical-pixel hash/PDQ candidate
     -> provenance + source labels + safety + SigLIP curation
     -> accepted/review/rejected policy record
-    -> accepted canonical derivative and compact patches in B2; rejected bytes deleted
-    -> versioned CLIP/SigLIP/DINO feature jobs
+    -> accepted canonical derivative in R2; rejected bytes deleted
+    -> versioned CLIP/SigLIP/CSD feature jobs
     -> PostgreSQL feature publication record
     -> local Qdrant versioned collection upsert
     -> reconciliation confirms canonical DB and serving index agree
@@ -556,9 +568,8 @@ Initial named vectors:
 | Vector | Role |
 | --- | --- |
 | `semantic` | CLIP/SigLIP-compatible text and image concept recall |
-| `visual_global` | DINO pooled pose, composition, and appearance recall |
-| `style` | Future starred DINO-LoRA style projection |
-| `detail_patches` | Optional float16 multivector used only for shortlist MaxSim |
+| `clip_subject` | CLIP semantic, subject, and text/image recall |
+| `csd_style` | CSD artistic-style recall |
 | `text_sparse` | Caption, alt text, tags, and artist/exact-term retrieval |
 
 Keep payload compact and index only fields used in filters. Create payload
@@ -599,7 +610,7 @@ five-user, best-effort alpha; retain snapshots and the ability to rebuild from
 PostgreSQL and B2. Add replication only before promising meaningful external
 availability.
 
-## 11. DINO Patch Storage Decision
+## 11. Superseded DINO Patch Storage Analysis
 
 The budget profile chooses a separate patch feature store: one compressed,
 checksummed artifact per artwork and feature fingerprint in B2, fetched only for
@@ -756,7 +767,7 @@ Keep the first deployment to a small set:
 1. `source-sync`: Tap integration and AppView reconciliation.
 2. `intake-worker`: acquisition, validation, policy, and derivatives, with
    commands or queue selection separating roles.
-3. `feature-worker`: versioned GPU image for SigLIP/CLIP/DINO jobs.
+3. `feature-worker`: versioned GPU image for SigLIP/CLIP/CSD jobs.
 4. `publisher`: Qdrant upsert/delete and reconciliation.
 5. `operator-api`: replay, review, status, and deletion controls.
 
@@ -897,7 +908,7 @@ Exit: source history and deletes remain correct through restart and redelivery.
 
 ### Slice 4: Batch curation and features
 
-- Package pinned SigLIP/CLIP/DINO artifacts by full commit.
+- Package pinned SigLIP/CLIP/CSD artifacts by full commit and checksum.
 - Add manifest-sized local batch jobs and incremental model workers.
 - Publish feature coverage, throughput, OOM, and cost metrics.
 - Add review sampling and safety-evaluation datasets.

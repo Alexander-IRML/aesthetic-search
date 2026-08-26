@@ -22,8 +22,7 @@ def _judgment(
     task = {
         RetrievalMode.ENSEMBLE: "ensemble",
         RetrievalMode.CLIP_SUBJECT: "subject",
-        RetrievalMode.DINO_POOLED: "style",
-        RetrievalMode.DINO_PATCH_MAXSIM: "local_detail",
+        RetrievalMode.CSD_STYLE: "style",
     }[mode]
     return RetrievalJudgment(
         judgment_id=f"{candidate}-{rank}-{relevant}-{labeled_at}",

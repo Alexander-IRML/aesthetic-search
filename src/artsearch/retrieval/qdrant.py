@@ -17,7 +17,6 @@ from artsearch.embed.storage import blob_to_vector, l2_normalize
 from artsearch.ingest.config import AppConfig, ModelConfig
 from artsearch.ingest.db import init_db
 from artsearch.production.config import QdrantConfig
-from artsearch.retrieval.search import _load_patch_matrices, patch_maxsim_score
 
 
 POINT_NAMESPACE = uuid.UUID("f5270c98-c2f8-4b38-b5a2-cef92754210f")
@@ -77,10 +76,8 @@ class QdrantSearchHit:
     fusion_rank: int | None = None
     clip_score: float | None = None
     clip_rank: int | None = None
-    dino_score: float | None = None
-    dino_rank: int | None = None
-    patch_score: float | None = None
-    patch_rank: int | None = None
+    style_score: float | None = None
+    style_rank: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -145,10 +142,10 @@ def model_bundle_version(models: ModelConfig, config: QdrantConfig) -> str:
         "clip_revision": models.clip_model_version,
         "clip_dimension": config.clip_dimension,
         "clip_vector": config.clip_vector_name,
-        "dino_model": models.dino_model_name,
-        "dino_revision": models.dino_model_version,
-        "dino_dimension": config.dino_dimension,
-        "dino_vector": config.dino_vector_name,
+        "csd_model": models.csd_model_name,
+        "csd_revision": models.csd_model_version,
+        "csd_dimension": config.csd_dimension,
+        "csd_vector": config.csd_vector_name,
         "datatype": config.datatype,
     }
     return hashlib.sha256(
@@ -183,8 +180,8 @@ def ensure_qdrant_collection(
                         datatype=_datatype(qmodels, config.datatype),
                         on_disk=config.on_disk_vectors,
                     ),
-                    config.dino_vector_name: qmodels.VectorParams(
-                        size=config.dino_dimension,
+                    config.csd_vector_name: qmodels.VectorParams(
+                        size=config.csd_dimension,
                         distance=qmodels.Distance.COSINE,
                         datatype=_datatype(qmodels, config.datatype),
                         on_disk=config.on_disk_vectors,
@@ -198,8 +195,8 @@ def ensure_qdrant_collection(
                     "model_bundle_version": model_bundle_version(models, config),
                     "clip_model": models.clip_model_name,
                     "clip_revision": models.clip_model_version,
-                    "dino_model": models.dino_model_name,
-                    "dino_revision": models.dino_model_version,
+                    "csd_model": models.csd_model_name,
+                    "csd_revision": models.csd_model_version,
                 },
             )
             created = True
@@ -419,7 +416,7 @@ def evaluate_qdrant_ann(
     effective_top_k = min(top_k, len(rows) - 1)
     vectors = (
         (config.clip_vector_name, "clip_vector", "clip_dim", config.clip_dimension),
-        (config.dino_vector_name, "dino_pooled", "dino_pooled_dim", config.dino_dimension),
+        (config.csd_vector_name, "csd_style", "csd_style_dim", config.csd_dimension),
     )
     metrics = tuple(
         _evaluate_named_vector(
@@ -445,7 +442,7 @@ def evaluate_qdrant_ann(
 
 
 class QdrantSearchService:
-    """Search named global vectors in Qdrant and rerank compact patches locally."""
+    """Search and fuse independently auditable CLIP subject and CSD style vectors."""
 
     def __init__(self, client: Any, config: QdrantConfig) -> None:
         self.client = client
@@ -459,53 +456,43 @@ class QdrantSearchService:
         *,
         top_k: int = 20,
         include_query_artist: bool = True,
-        use_patch_rerank: bool = True,
     ) -> list[QdrantSearchHit]:
         if top_k <= 0:
             raise ValueError("top_k must be positive")
         row = connection.execute(
             """
             SELECT a.artist_id, e.clip_vector, e.clip_dim,
-                   e.dino_pooled, e.dino_pooled_dim
+                   e.csd_style, e.csd_style_dim
               FROM artworks AS a
               JOIN embeddings AS e ON e.artwork_id = a.artwork_id
              WHERE a.artwork_id = ?
                AND e.model_name_clip = ?
                AND e.model_version_clip = ?
-               AND e.model_name_dino = ?
-               AND e.model_version_dino = ?
+               AND e.model_name_csd = ?
+               AND e.model_version_csd = ?
             """,
             (
                 artwork_id,
                 app_config.models.clip_model_name,
                 app_config.models.clip_model_version,
-                app_config.models.dino_model_name,
-                app_config.models.dino_model_version,
+                app_config.models.csd_model_name,
+                app_config.models.csd_model_version,
             ),
         ).fetchone()
         if row is None:
-            raise ValueError(f"current CLIP/DINO embeddings not found for {artwork_id!r}")
+            raise ValueError(f"current CLIP/CSD embeddings not found for {artwork_id!r}")
         clip = _vector_from_blob(row["clip_vector"], row["clip_dim"], self.config.clip_dimension)
-        dino = _vector_from_blob(
-            row["dino_pooled"],
-            row["dino_pooled_dim"],
-            self.config.dino_dimension,
+        style = _vector_from_blob(
+            row["csd_style"],
+            row["csd_style_dim"],
+            self.config.csd_dimension,
         )
         hits = self._search_fused(
             clip,
-            dino,
+            style,
             exclude_artwork_id=artwork_id,
             exclude_artist_id=(None if include_query_artist else str(row["artist_id"])),
         )
-        if use_patch_rerank and self.config.patch_rerank_limit:
-            hits = _rerank_patches(
-                connection,
-                app_config,
-                artwork_id,
-                hits,
-                limit=self.config.patch_rerank_limit,
-                patch_match_top_n=app_config.retrieval.patch_match_top_n,
-            )
         return _apply_artist_diversity(hits, top_k, self.config.max_results_per_artist)
 
     def search_by_clip_vector(
@@ -548,12 +535,33 @@ class QdrantSearchService:
         ]
         return _apply_artist_diversity(hits, top_k, self.config.max_results_per_artist)
 
+    def search_by_vectors(
+        self,
+        clip_vector: np.ndarray,
+        style_vector: np.ndarray,
+        *,
+        top_k: int = 10,
+    ) -> list[QdrantSearchHit]:
+        """Fuse an external image's version-compatible CLIP and CSD vectors."""
+
+        if top_k <= 0:
+            raise ValueError("top_k must be positive")
+        clip = _validated_vector(clip_vector, self.config.clip_dimension)
+        style = _validated_vector(style_vector, self.config.csd_dimension)
+        hits = self._search_fused(
+            clip,
+            style,
+            exclude_artwork_id=None,
+            exclude_artist_id=None,
+        )
+        return _apply_artist_diversity(hits, top_k, self.config.max_results_per_artist)
+
     def _search_fused(
         self,
         clip: np.ndarray,
-        dino: np.ndarray,
+        style: np.ndarray,
         *,
-        exclude_artwork_id: str,
+        exclude_artwork_id: str | None,
         exclude_artist_id: str | None,
     ) -> list[QdrantSearchHit]:
         _, qmodels = _qdrant_imports()
@@ -570,9 +578,9 @@ class QdrantSearchService:
             params=params,
             limit=self.config.prefetch_limit,
         )
-        dino_prefetch = qmodels.Prefetch(
-            query=dino.tolist(),
-            using=self.config.dino_vector_name,
+        style_prefetch = qmodels.Prefetch(
+            query=style.tolist(),
+            using=self.config.csd_vector_name,
             filter=query_filter,
             params=params,
             limit=self.config.prefetch_limit,
@@ -587,15 +595,15 @@ class QdrantSearchService:
                 with_payload=True,
             ),
             qmodels.QueryRequest(
-                query=dino.tolist(),
-                using=self.config.dino_vector_name,
+                query=style.tolist(),
+                using=self.config.csd_vector_name,
                 filter=query_filter,
                 params=params,
                 limit=self.config.prefetch_limit,
                 with_payload=True,
             ),
             qmodels.QueryRequest(
-                prefetch=[clip_prefetch, dino_prefetch],
+                prefetch=[clip_prefetch, style_prefetch],
                 query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
                 filter=query_filter,
                 limit=self.config.fusion_limit,
@@ -603,22 +611,22 @@ class QdrantSearchService:
             ),
         ]
         try:
-            clip_response, dino_response, fused_response = self.client.query_batch_points(
+            clip_response, style_response, fused_response = self.client.query_batch_points(
                 collection_name=self.config.alias_name,
                 requests=requests,
             )
         except Exception as exc:
             raise QdrantIntegrationError(
-                f"Qdrant CLIP/DINO fusion search failed: {type(exc).__name__}: {exc}"
+                f"Qdrant CLIP/CSD fusion search failed: {type(exc).__name__}: {exc}"
             ) from exc
 
         clip_evidence = _rank_evidence(clip_response.points)
-        dino_evidence = _rank_evidence(dino_response.points)
+        style_evidence = _rank_evidence(style_response.points)
         hits: list[QdrantSearchHit] = []
         for fusion_rank, point in enumerate(fused_response.points, start=1):
             artwork_id = _payload_text(point.payload, "artwork_id")
             clip_score, clip_rank = clip_evidence.get(artwork_id, (None, None))
-            dino_score, dino_rank = dino_evidence.get(artwork_id, (None, None))
+            style_score, style_rank = style_evidence.get(artwork_id, (None, None))
             hits.append(
                 QdrantSearchHit(
                     artwork_id=artwork_id,
@@ -630,11 +638,38 @@ class QdrantSearchService:
                     fusion_rank=fusion_rank,
                     clip_score=clip_score,
                     clip_rank=clip_rank,
-                    dino_score=dino_score,
-                    dino_rank=dino_rank,
+                    style_score=style_score,
+                    style_rank=style_rank,
                 )
             )
         return hits
+
+
+def validate_qdrant_read_alias(
+    client: Any,
+    config: QdrantConfig,
+    models: ModelConfig,
+) -> None:
+    """Verify that the immutable model collection and stable read alias agree."""
+
+    try:
+        info = client.get_collection(config.collection_name)
+        _validate_collection_schema(info, config, models)
+        aliases = {
+            alias.alias_name: alias.collection_name for alias in client.get_aliases().aliases
+        }
+    except QdrantIntegrationError:
+        raise
+    except Exception as exc:
+        raise QdrantIntegrationError(
+            f"could not validate Qdrant read alias: {type(exc).__name__}: {exc}"
+        ) from exc
+    target = aliases.get(config.alias_name)
+    if target != config.collection_name:
+        raise QdrantIntegrationError(
+            f"Qdrant alias {config.alias_name!r} targets {target!r}, "
+            f"expected {config.collection_name!r}"
+        )
 
 
 def _eligible_rows(
@@ -686,8 +721,8 @@ def _eligible_rows(
                a.date_added,
                e.clip_vector,
                e.clip_dim,
-               e.dino_pooled,
-               e.dino_pooled_dim,
+               e.csd_style,
+               e.csd_style_dim,
                e.date_computed,
                COALESCE(d.predicted_class, 'unknown') AS content_class,
                d.decision AS filter_decision,
@@ -709,13 +744,13 @@ def _eligible_rows(
                OR (d.decision = 'accept' AND d.accepted_for_main_corpus = 1)
            )
            AND e.clip_vector IS NOT NULL
-           AND e.dino_pooled IS NOT NULL
+           AND e.csd_style IS NOT NULL
            AND e.clip_dim = ?
-           AND e.dino_pooled_dim = ?
+           AND e.csd_style_dim = ?
            AND e.model_name_clip = ?
            AND e.model_version_clip = ?
-           AND e.model_name_dino = ?
-           AND e.model_version_dino = ?
+           AND e.model_name_csd = ?
+           AND e.model_version_csd = ?
          ORDER BY a.artwork_id
         """,
         (
@@ -723,11 +758,11 @@ def _eligible_rows(
             int(config.require_sfw),
             int(config.require_bluesky_accept),
             config.clip_dimension,
-            config.dino_dimension,
+            config.csd_dimension,
             app_config.models.clip_model_name,
             app_config.models.clip_model_version,
-            app_config.models.dino_model_name,
-            app_config.models.dino_model_version,
+            app_config.models.csd_model_name,
+            app_config.models.csd_model_version,
         ),
     )
 
@@ -759,7 +794,7 @@ def _evaluate_named_vector(
         )
         started = time.perf_counter()
         approximate = client.query_points(
-            collection_name=config.alias_name,
+            collection_name=config.collection_name,
             query=query,
             using=vector_name,
             query_filter=query_filter,
@@ -807,10 +842,10 @@ def _point_from_row(
 ) -> tuple[Any, str]:
     _, qmodels = _qdrant_imports()
     clip = _vector_from_blob(row["clip_vector"], row["clip_dim"], config.clip_dimension)
-    dino = _vector_from_blob(
-        row["dino_pooled"],
-        row["dino_pooled_dim"],
-        config.dino_dimension,
+    style = _vector_from_blob(
+        row["csd_style"],
+        row["csd_style_dim"],
+        config.csd_dimension,
     )
     payload = {
         "artwork_id": str(row["artwork_id"]),
@@ -827,14 +862,14 @@ def _point_from_row(
     }
     content_hash = hashlib.sha256()
     content_hash.update(bytes(row["clip_vector"]))
-    content_hash.update(bytes(row["dino_pooled"]))
+    content_hash.update(bytes(row["csd_style"]))
     content_hash.update(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     return (
         qmodels.PointStruct(
             id=point_id,
             vector={
                 config.clip_vector_name: clip.tolist(),
-                config.dino_vector_name: dino.tolist(),
+                config.csd_vector_name: style.tolist(),
             },
             payload=payload,
         ),
@@ -931,52 +966,6 @@ def _delete_untracked_remote_points(
             untracked_ids[offset : offset + config.batch_size],
         )
     return len(untracked_ids)
-
-
-def _rerank_patches(
-    connection: sqlite3.Connection,
-    app_config: AppConfig,
-    query_artwork_id: str,
-    hits: list[QdrantSearchHit],
-    *,
-    limit: int,
-    patch_match_top_n: int,
-) -> list[QdrantSearchHit]:
-    shortlist = hits[:limit]
-    matrices = _load_patch_matrices(
-        connection,
-        app_config,
-        [query_artwork_id, *(hit.artwork_id for hit in shortlist)],
-    )
-    query_patches = matrices.get(query_artwork_id)
-    if query_patches is None:
-        return hits
-    scored: list[QdrantSearchHit] = []
-    for hit in shortlist:
-        candidate = matrices.get(hit.artwork_id)
-        patch_score = (
-            patch_maxsim_score(query_patches, candidate, top_n=patch_match_top_n)
-            if candidate is not None
-            else None
-        )
-        scored.append(replace(hit, patch_score=patch_score))
-    scored.sort(
-        key=lambda hit: (
-            hit.patch_score is None,
-            -(hit.patch_score if hit.patch_score is not None else -1.0),
-            hit.fusion_rank or 0,
-            hit.artwork_id,
-        )
-    )
-    reranked = [
-        replace(
-            hit,
-            score=hit.patch_score if hit.patch_score is not None else hit.score,
-            patch_rank=rank if hit.patch_score is not None else None,
-        )
-        for rank, hit in enumerate(scored, start=1)
-    ]
-    return [*reranked, *hits[limit:]]
 
 
 def _apply_artist_diversity(
@@ -1096,7 +1085,7 @@ def _validate_collection_schema(
         raise QdrantIntegrationError("Qdrant collection does not use named vectors")
     expected = {
         config.clip_vector_name: config.clip_dimension,
-        config.dino_vector_name: config.dino_dimension,
+        config.csd_vector_name: config.csd_dimension,
     }
     if set(vectors) != set(expected):
         raise QdrantIntegrationError(

@@ -54,15 +54,12 @@ CREATE TABLE IF NOT EXISTS embeddings (
     artwork_id            TEXT PRIMARY KEY REFERENCES artworks(artwork_id),
     clip_vector           BLOB,
     clip_dim              INTEGER,
-    dino_pooled           BLOB,
-    dino_pooled_dim       INTEGER,
-    dino_patches          BLOB,
-    dino_patch_grid_size  INTEGER,
-    dino_patch_dim        INTEGER,
+    csd_style             BLOB,
+    csd_style_dim         INTEGER,
     model_name_clip       TEXT,
     model_version_clip    TEXT,
-    model_name_dino       TEXT,
-    model_version_dino    TEXT,
+    model_name_csd        TEXT,
+    model_version_csd     TEXT,
     date_computed         TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -160,14 +157,35 @@ CREATE TABLE IF NOT EXISTS vector_index_points (
     UNIQUE (collection_name, point_id)
 );
 
+CREATE TABLE IF NOT EXISTS bluesky_actor_intake_state (
+    actor_key            TEXT PRIMARY KEY,
+    actor                TEXT NOT NULL,
+    high_water_post_uri  TEXT,
+    pending_high_water_post_uri TEXT,
+    resume_cursor        TEXT,
+    last_scan_complete   INTEGER NOT NULL DEFAULT 0
+        CHECK (last_scan_complete IN (0, 1)),
+    last_candidate_count INTEGER NOT NULL DEFAULT 0,
+    last_error           TEXT,
+    last_attempt_at      TEXT NOT NULL,
+    last_completed_at    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bluesky_roster_intake_state (
+    roster_key       TEXT PRIMARY KEY,
+    actor_count      INTEGER NOT NULL,
+    next_actor_index INTEGER NOT NULL DEFAULT 0,
+    updated_at       TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_artworks_artist ON artworks(artist_id);
 CREATE INDEX IF NOT EXISTS idx_artworks_file_hash ON artworks(file_hash);
 CREATE INDEX IF NOT EXISTS idx_artworks_phash ON artworks(phash);
 CREATE INDEX IF NOT EXISTS idx_artworks_review_status ON artworks(review_status);
 CREATE INDEX IF NOT EXISTS idx_artworks_demo_policy
     ON artworks(demo_eligible, is_sfw, validated);
-CREATE INDEX IF NOT EXISTS idx_embeddings_models
-    ON embeddings(model_name_dino, model_version_dino, model_name_clip, model_version_clip);
+CREATE INDEX IF NOT EXISTS idx_embeddings_csd_models
+    ON embeddings(model_name_csd, model_version_csd, model_name_clip, model_version_clip);
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id);
 CREATE INDEX IF NOT EXISTS idx_filter_decisions_candidate
     ON artwork_filter_decisions(candidate_id, processed_at);
@@ -179,3 +197,5 @@ CREATE INDEX IF NOT EXISTS idx_artwork_objects_hash
     ON artwork_objects(content_sha256);
 CREATE INDEX IF NOT EXISTS idx_vector_index_points_artwork
     ON vector_index_points(artwork_id);
+CREATE INDEX IF NOT EXISTS idx_bluesky_actor_intake_completed
+    ON bluesky_actor_intake_state(last_completed_at);

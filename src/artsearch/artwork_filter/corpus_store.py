@@ -259,6 +259,14 @@ class ArtworkFilterCorpusStore:
         artist = _artist_record(candidate)
         register_artist(conn, artist)
         transform = standardized.transform
+        source_safe = bool(
+            candidate.source == "bluesky"
+            and candidate.source_moderation_passed
+            and self.filter_config.policy.trust_source_moderation_for_sfw
+        )
+        demo_eligible = bool(
+            source_safe and self.filter_config.policy.source_safe_accepts_demo_eligible
+        )
         values = {
             "artist_id": artist.artist_id,
             "raw_path": self._path_for_db(routed.local_path),
@@ -269,7 +277,8 @@ class ArtworkFilterCorpusStore:
             "orig_height": standardized.orig_height,
             "file_hash": routed.image_sha256,
             "phash": routed.perceptual_hash,
-            "is_sfw": None,
+            "is_sfw": 1 if source_safe else None,
+            "demo_eligible": int(demo_eligible),
             "validated": 1,
             "review_status": "unreviewed",
             "duplicate_of": None,
@@ -333,6 +342,7 @@ def decision_cache_key(result: FilterResult, candidate: ImageCandidate) -> str:
             "alt_text": candidate.alt_text,
             "content_labels": candidate.content_labels,
             "author_labels": candidate.author_labels,
+            "source_moderation_passed": candidate.source_moderation_passed,
             "is_repost": candidate.is_repost,
             "is_quote_post": candidate.is_quote_post,
             "quoted_author_did": candidate.quoted_author_did,

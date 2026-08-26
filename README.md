@@ -2,19 +2,20 @@
 
 Data preparation and baseline visual search pipeline for artwork.
 
-Current release: **v0.3.2**. See the
-[v0.3.2 release notes](docs/releases/v0.3.2.md) for the Qdrant retrieval-serving
-integration and verification record.
+Current release: **v0.5.0**. See the
+[v0.5.0 release notes](docs/releases/v0.5.0.md) for the closed-alpha cloud
+search, CLIP/CSD retrieval, PostgreSQL telemetry, and deployment verification
+record.
 
 The current MVP ingests explicitly registered artist folders from `data/raw/`,
 standardizes images into 448x448 JPEGs in `data/processed/`, tracks metadata in
-SQLite, stores CLIP and DINOv2 embeddings, and can generate local HTML search
-demos using a two-stage DINO ensemble with auditable CLIP, pooled-DINO, and
-patch-DINO component evidence.
+SQLite, stores CLIP subject and CSD artistic-style embeddings, and can generate
+local HTML search demos using reciprocal-rank fusion with auditable component
+scores and ranks.
 
 For a more detailed technical summary, see
 [docs/mvp_report.md](docs/mvp_report.md).
-The current component map, Bluesky pipeline sequence, and SQLite relationship
+The current component map, Bluesky pipeline sequence, and data-store relationship
 diagram are in [docs/artsearch_architecture.puml](docs/artsearch_architecture.puml).
 The production-scale Qdrant/HNSW, ingestion, hybrid retrieval, and alpha roadmap
 is recorded in
@@ -27,11 +28,101 @@ slice is documented in
 [docs/production_data_platform.md](docs/production_data_platform.md), with its
 component flow in
 [docs/production_data_platform.puml](docs/production_data_platform.puml).
-The Qdrant named-vector schema, safety gate, CLIP/DINO fusion funnel, sync and
+The Qdrant named-vector schema, safety gate, CLIP/CSD fusion funnel, sync and
 repair behavior, ANN evaluation, and local/Cloud runbook are in
 [docs/qdrant_retrieval.md](docs/qdrant_retrieval.md).
+The executable local health dashboard, metric definitions, drift windows, and
+privacy boundary are documented in
+[docs/model_operations_dashboard.md](docs/model_operations_dashboard.md).
+The accepted closed-alpha cloud topology, provider handoff, and public product
+direction are recorded in
+[docs/adr/0001-alpha-cloud-topology.md](docs/adr/0001-alpha-cloud-topology.md),
+[docs/adr/0002-csd-style-retrieval.md](docs/adr/0002-csd-style-retrieval.md),
+[docs/alpha_deployment_runbook.md](docs/alpha_deployment_runbook.md), and
+[docs/public_search_experience.md](docs/public_search_experience.md).
+The Python compatibility decision, pinned container targets, and complete local
+Docker topology are in
+[docs/runtime_containerization.md](docs/runtime_containerization.md).
+The public upload-to-search API, same-origin frontend, security limits, model
+compatibility contract, and hosted deployment boundary are documented in
+[docs/public_image_search_api.md](docs/public_image_search_api.md).
+
+## Container Workflow
+
+ArtSearch containers standardize on the Python 3.12 minor. The root application
+images currently use 3.12.14, while Airflow uses its official Python 3.12 image.
+The root Compose stack runs PostgreSQL, Qdrant, Alembic migration, the private
+model dashboard, Airflow, and an optional CPU-only ML toolbox without placing
+corpus bytes in an image:
+
+```bash
+cp .env.example .env
+docker compose build
+docker compose up -d
+docker compose ps
+```
+
+The dashboard is then available at `http://127.0.0.1:8765` and Airflow at
+`http://127.0.0.1:8081`. Docker Desktop must have WSL integration enabled on
+Windows. All published ports are loopback-only.
+
+After publishing the active Qdrant alias, start the optional public-search
+vertical slice with the exact pinned CLIP and CSD model image:
+
+```bash
+docker compose --profile search up -d api
+```
+
+The upload-first search workbench is then available at
+`http://127.0.0.1:8000/search`. It accepts one JPEG, PNG, or WebP, encodes it in
+memory into the active corpus spaces, performs CLIP/CSD reciprocal-rank fusion,
+and returns a fixed top 10. The upload is not persisted.
+
+## Cloud Alpha
+
+The closed-alpha query path is deployed as a Cloudflare Worker plus one
+scale-to-zero CPU Container. The Worker owns invite access, private R2 media,
+and origin isolation; the Container owns exact CLIP/CSD query encoding and calls
+Qdrant Cloud plus Neon PostgreSQL. Search traffic does not use the developer
+laptop.
+
+For a new environment or redeployment, print the account list, copy the cloud
+configuration template, and validate the provider contracts with:
+
+```bash
+.venv/bin/artsearch-deploy accounts
+cp configs/production.alpha-cloud.example.toml \
+  configs/production.alpha-cloud.local.toml
+.venv/bin/artsearch-deploy configure-postgres
+.venv/bin/artsearch-deploy generate-session-secret
+.venv/bin/artsearch-deploy preflight \
+  --production-config configs/production.alpha-cloud.local.toml
+```
+
+The first preflight phase requires only R2 and Qdrant credentials. `--phase api`
+adds PostgreSQL and session-secret requirements; `--phase full` reserves Modal
+credentials for a future external inference worker. Secret values are checked
+for presence but are never printed. The optional private intake control-plane
+scaffold lives under `deploy/alpha/`; the deployed query service lives under
+`deploy/cloudflare-search/`. See that package's README for access-secret
+generation, deployment, and smoke checks.
 
 ## Local Workflow
+
+Launch the local model operations and human-review dashboard, or install its
+double-click desktop launcher:
+
+```bash
+.venv/bin/artsearch-model-dashboard
+.venv/bin/artsearch-model-dashboard --install-desktop-launcher
+```
+
+It aggregates corpus and embedding coverage, SigLIP evaluation, retrieval rank
+metrics, Qdrant ANN recall/latency, recent-vs-baseline drift, source diversity,
+throughput, failures, and exact model/index lineage. The `Review & feedback`
+tab writes append-only artwork labels and exact retrieval relevance judgments;
+new evidence enters the dashboard metrics without editing SQLite. Missing human
+or ANN evaluation evidence remains explicitly unmeasured.
 
 For a private corpus, keep real artist registrations in the ignored local
 manifest:
@@ -69,25 +160,100 @@ AIRFLOW_UID="$(id -u)" docker compose \
   -f orchestration/airflow/compose.yaml up --build
 ```
 
+The local image pins CPU-only PyTorch so a non-GPU workstation does not pull
+the multi-gigabyte CUDA runtime. Move to a GPU worker image deliberately when
+measured intake throughput justifies it.
+
 The intake DAG orchestrates the existing Bluesky/SigLIP pipeline, Polars
 manifest and metrics builds, and immutable accepted-original/run publication.
 The separate Spark DAG reconciles all historical Parquet manifests and emits
 corpus quality, duplicate, artist, and decision reports.
 
-Qdrant provides the scalable retrieval-serving layer while SQLite remains
-canonical. Start the local service and inspect eligibility before syncing:
+Daily local intake targets 5,000 source-image candidates across the ignored
+583-artist roster. The collector rotates the roster, persists per-artist
+high-water marks and pagination cursors in SQLite, and finishes the current
+artist before stopping. Install or exercise the 10:00 AM Windows trigger with:
+
+```bash
+.venv/bin/artsearch-intake status
+.venv/bin/artsearch-intake run-now
+.venv/bin/artsearch-intake install-windows
+```
+
+The scheduled launcher runs only from 10:00 through 10:15 America/Chicago. A
+sleeping or powered-off computer skips that day; it is not caught up later.
+The default task also requires AC power and stops if the laptop switches to
+battery. Docker Desktop with WSL integration is required for the Airflow runner;
+the launcher starts Docker Desktop and waits for its engine when necessary.
+The 5,000 figure is the daily source-candidate budget; the operations dashboard
+records actual throughput and acceptance coverage so capacity can be tuned from
+measured runs.
+
+For an explicit one-off bulk intake, keep the supplied roster private at
+`config/bluesky_actors.local.csv` and use the separate 20,000-candidate profile:
+
+```bash
+.venv/bin/artsearch-intake \
+  --config configs/intake_scheduler.bulk.toml status
+# Run only after reviewing the status, R2 canary prerequisites, and artist CSV:
+.venv/bin/artsearch-intake \
+  --config configs/intake_scheduler.bulk.toml run-now
+```
+
+That profile requires the ignored
+`configs/production.alpha-cloud.local.toml` copied from the alpha-cloud example;
+the scheduler passes it explicitly to Airflow so accepted originals publish to
+R2 rather than the local object-store backend.
+
+CSV rosters may contain a handle, DID, or `bsky.app/profile/...` URL. The intake
+DAG validates Cloudflare R2 before collection, downloads SigLIP thumbnails and
+accepted full-size files with separate bounded HTTP pools, then publishes
+accepted originals through 16 parallel S3-compatible R2 workers. Content-
+addressed keys, checksums, retries, and batched SQLite checkpoints make reruns
+idempotent. See [the 20k rush runbook](docs/rush_20k_launch_runbook.md) before
+starting a bulk run.
+
+Qdrant provides the scalable retrieval-serving layer. SQLite remains the local
+staging and offline-development database; PostgreSQL is canonical when the
+production adapter is enabled. Start the local service and inspect eligibility
+before syncing:
 
 ```bash
 python -m pip install -e '.[qdrant]'
 docker compose -f orchestration/airflow/compose.yaml up -d qdrant
 artsearch-qdrant eligibility
 artsearch-qdrant sync
-artsearch-qdrant evaluate-ann --sample-size 50 --top-k 20
+artsearch-qdrant evaluate-ann --sample-size 50 --top-k 100
 ```
 
-Only explicitly `demo_eligible` and SFW artwork enters Qdrant. Existing artwork
-starts demo-ineligible; SigLIP artwork acceptance is not treated as a safety
-decision.
+The production control plane uses SQLAlchemy Core, Alembic, psycopg 3, Neon
+pooled/direct connections, PostgreSQL RLS-ready product telemetry, compact
+`halfvec` archival CLIP/CSD values, and a transactional Qdrant outbox:
+
+```bash
+python -m pip install -e '.[postgres]'
+artsearch-postgres --config configs/production.alpha-cloud.local.toml upgrade
+artsearch-postgres --config configs/production.alpha-cloud.local.toml status
+artsearch-postgres --config configs/production.alpha-cloud.local.toml \
+  publish-sqlite --sqlite data/artsearch.db
+artsearch-postgres --config configs/production.alpha-cloud.local.toml drain-qdrant
+```
+
+`DATABASE_URL` is the pooled runtime connection and `DATABASE_DIRECT_URL` is
+reserved for Alembic and cutover publication. See the
+[PostgreSQL control-plane runbook](docs/postgresql_control_plane.md) before a
+live migration.
+
+Public image search persists rolling p50/p95 latency, top-100 ranked candidate
+evidence, top-10 impressions, and Great/Good/Bad relevance feedback. The model
+operations dashboard reports search volume, complete-query Precision@10,
+graded nDCG@10, exact-versus-HNSW Recall@100, and durable pipeline-stage success.
+
+Only explicitly `demo_eligible` and SFW artwork enters Qdrant. Accepted Bluesky
+images that passed the configured source-label/text moderation gate now receive
+those flags automatically. Legacy, local, and source-unverified artwork stays
+unknown and demo-ineligible until reviewed; SigLIP itself is still not an adult
+content classifier.
 
 Embedding generation uses optional ML dependencies:
 
@@ -98,19 +264,14 @@ python scripts/search_demo.py <artwork_id>
 python scripts/open_gallery.py
 python scripts/search_gallery.py --mode ensemble
 python scripts/search_gallery.py --mode clip_subject
-python scripts/search_gallery.py --mode dino_pooled
-python scripts/search_gallery.py --mode dino_patch_maxsim
-python scripts/patch_diagnostics.py <query_artwork_id> <candidate_artwork_id>
+python scripts/search_gallery.py --mode csd_style
 ```
 
-The default `ensemble` ranking is a staged recipe, not a concatenated or
-weighted mega-vector. DINO pooled cosine similarity searches the eligible
-corpus and selects the configured shortlist. Patch-token late interaction then
-reranks only those candidates. CLIP subject similarity is computed over the
-same eligible corpus and displayed as a parallel semantic rank, but it cannot
-change ensemble ordering. Configure `retrieval.shortlist_size` and
-`retrieval.patch_match_top_n` in `config/config.yaml`; top-N patch matching
-supports direct A/B testing against strict MaxSim (`top_n = 1`).
+The default `ensemble` ranking is not a concatenated mega-vector. CLIP subject
+and CSD style cosine retrieval each produce a configurable recall list; their
+union is ordered with reciprocal-rank fusion. Configure
+`retrieval.shortlist_size` in `config/config.yaml`. Every result retains its
+fusion rank plus the original CLIP and CSD similarities and ranks.
 
 The retrieval package also exposes CLIP text embedding plus normalized
 mean-difference, query-shift, and Gram-Schmidt direction primitives. These are
@@ -273,7 +434,7 @@ calibrating the model, explicitly set `automatic_accept_enabled = true` in the
 filter config. High-confidence `ACCEPT` results will then download the full-size
 image, strip metadata by re-encoding it, standardize it, and upsert the artwork
 row into `data/artsearch.db`. Run `python scripts/embed.py` afterward to create
-the retrieval CLIP and DINO embeddings for newly imported artwork.
+the retrieval CLIP and CSD embeddings for newly imported artwork.
 
 Review-image downloads remain an explicit config opt-in. `--no-review-download`
 can enforce the no-download behavior when using a different configuration.
@@ -306,7 +467,7 @@ python scripts/rebuild_bluesky_corpus.py --dry-run
 
 Then archive the existing active database/raw/processed files, rebuild a fresh
 SQLite corpus from the selected full-size Bluesky images, compute pinned CLIP
-and DINO embeddings, and write the retrieval workbench:
+and CSD embeddings, and write the retrieval workbench:
 
 ```bash
 python scripts/rebuild_bluesky_corpus.py --confirm-replace
@@ -314,9 +475,9 @@ python scripts/rebuild_bluesky_corpus.py --confirm-replace
 ```
 
 The final workbench has two tabs. **Browse** shows the primary ensemble ranking.
-Each result reports its final patch rank, pooled-recall rank, independent CLIP
-semantic rank, scores, and shortlist size. **Evaluation** compares that complete
-recipe against the three component baselines. Dashboard generation precomputes
+Each result reports its final fusion rank, independent CLIP subject rank, CSD
+style rank, scores, and recall-set size. **Evaluation** compares that complete
+recipe against both component retrievers. Dashboard generation precomputes
 three seeded, artist-balanced review sessions by default. Each session uses one
 random query per artist without repeating query images between sessions. Every
 displayed result is a top-k `MATCH` guess. Mark each result `Yes` or `No` for the

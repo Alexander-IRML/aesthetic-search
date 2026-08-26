@@ -1,0 +1,29 @@
+version = "1.0.0"
+host = "127.0.0.1"
+port = 8000
+
+# The local web surface enriches Qdrant IDs from the private SQLite staging DB
+# and serves only catalog-approved processed images through a controlled route.
+catalog_backend = "sqlite"
+telemetry_enabled = true
+serve_local_images = true
+asset_base_url = ""
+
+result_limit = 10
+candidate_telemetry_limit = 100
+max_upload_bytes = 10000000
+max_image_pixels = 40000000
+allowed_mime_types = ["image/jpeg", "image/png", "image/webp"]
+
+# One CPU model owner prevents overlapping CSD/CLIP jobs from exhausting RAM.
+max_concurrent_inferences = 1
+inference_queue_timeout_seconds = 2.0
+inference_timeout_seconds = 120.0
+
+# Cloudflare remains the authoritative production limiter. This local guard
+# prevents one client from bypassing the public API budget.
+rate_limit_requests = 12
+rate_limit_window_seconds = 60
+feedback_rate_limit_requests = 120
+feedback_rate_limit_window_seconds = 60
+trust_proxy_headers = false

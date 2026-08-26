@@ -140,6 +140,13 @@ def test_non_blocking_labels_are_preserved_for_audit():
 
     assert candidates[0].content_labels == ["bot"]
     assert candidates[0].author_labels == ["verified"]
+    assert candidates[0].source_moderation_passed is True
+
+
+def test_candidate_without_source_moderation_keeps_safety_unknown():
+    candidates = candidates_from_feed_item(_image_item())
+
+    assert candidates[0].source_moderation_passed is False
 
 
 def _image_item():

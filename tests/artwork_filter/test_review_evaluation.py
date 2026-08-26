@@ -215,7 +215,7 @@ def _result(
         visual_scores=VisualScores(
             backend="fake",
             model_id="fake/model",
-            model_revision="revision",
+            model_revision=CONFIG.model.revision,
             mode=ModelMode.ZERO_SHOT,
             class_scores=[
                 ClassScore(content_class=ContentClass.FINISHED_ILLUSTRATION, score=0.9),

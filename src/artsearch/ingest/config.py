@@ -26,8 +26,12 @@ class DuplicateConfig:
 class ModelConfig:
     clip_model_name: str
     clip_model_version: str
-    dino_model_name: str
-    dino_model_version: str
+    csd_model_name: str
+    csd_model_version: str
+    csd_model_filename: str
+    csd_model_sha256: str
+    csd_processor_name: str
+    csd_processor_version: str
 
 
 @dataclass(frozen=True)
@@ -42,7 +46,6 @@ class RetrievalConfig:
     demo_output_path: Path
     gallery_output_path: Path
     shortlist_size: int = 100
-    patch_match_top_n: int = 1
     review_session_count: int = 3
 
 
@@ -86,10 +89,29 @@ def load_config(path: str | Path = "config/config.yaml") -> AppConfig:
     model_config = ModelConfig(
         clip_model_name=str(models.get("clip_model_name", "openai/clip-vit-base-patch32")),
         clip_model_version=str(models.get("clip_model_version", "main")),
-        dino_model_name=str(
-            models.get("dino_model_name", "facebook/dinov2-with-registers-base")
+        csd_model_name=str(models.get("csd_model_name", "yuxi-liu-wired/CSD")),
+        csd_model_version=str(
+            models.get(
+                "csd_model_version",
+                "cd2dac3ad9398e42906127bc44988a6de47abe68",
+            )
         ),
-        dino_model_version=str(models.get("dino_model_version", "main")),
+        csd_model_filename=str(
+            models.get("csd_model_filename", "csd_clip_model_pytorch.safetensors")
+        ),
+        csd_model_sha256=str(
+            models.get(
+                "csd_model_sha256",
+                "02d842ed2536e1f883fc832cd1566d0e6c569457979f878379e382e04b2bda84",
+            )
+        ),
+        csd_processor_name=str(models.get("csd_processor_name", "openai/clip-vit-large-patch14")),
+        csd_processor_version=str(
+            models.get(
+                "csd_processor_version",
+                "32bd64288804d66eefd0ccbe215aa642df71cc41",
+            )
+        ),
     )
     embedding_config = EmbeddingConfig(
         batch_size=int(embeddings.get("batch_size", 4)),
@@ -103,7 +125,6 @@ def load_config(path: str | Path = "config/config.yaml") -> AppConfig:
             retrieval.get("gallery_output", "data/search_gallery.html"),
         ),
         shortlist_size=int(retrieval.get("shortlist_size", 100)),
-        patch_match_top_n=int(retrieval.get("patch_match_top_n", 1)),
         review_session_count=int(retrieval.get("review_session_count", 3)),
     )
 
@@ -144,9 +165,7 @@ def _validate_image_config(config: ImageConfig) -> None:
     if not 1 <= config.jpeg_quality <= 100:
         raise ValueError("images.jpeg_quality must be between 1 and 100")
     if config.padding_fill_strategy not in {"neutral_gray", "average_edge_color"}:
-        raise ValueError(
-            "images.padding_fill_strategy must be neutral_gray or average_edge_color"
-        )
+        raise ValueError("images.padding_fill_strategy must be neutral_gray or average_edge_color")
     if not 0 <= config.neutral_gray_value <= 255:
         raise ValueError("images.neutral_gray_value must be between 0 and 255")
 
@@ -156,10 +175,21 @@ def _validate_model_config(config: ModelConfig) -> None:
         raise ValueError("models.clip_model_name must be set")
     if not config.clip_model_version:
         raise ValueError("models.clip_model_version must be set")
-    if not config.dino_model_name:
-        raise ValueError("models.dino_model_name must be set")
-    if not config.dino_model_version:
-        raise ValueError("models.dino_model_version must be set")
+    required = {
+        "csd_model_name": config.csd_model_name,
+        "csd_model_version": config.csd_model_version,
+        "csd_model_filename": config.csd_model_filename,
+        "csd_model_sha256": config.csd_model_sha256,
+        "csd_processor_name": config.csd_processor_name,
+        "csd_processor_version": config.csd_processor_version,
+    }
+    for name, value in required.items():
+        if not value:
+            raise ValueError(f"models.{name} must be set")
+    if len(config.csd_model_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in config.csd_model_sha256.lower()
+    ):
+        raise ValueError("models.csd_model_sha256 must be a SHA-256 hex digest")
 
 
 def _validate_embedding_config(config: EmbeddingConfig) -> None:
@@ -174,7 +204,5 @@ def _validate_retrieval_config(config: RetrievalConfig) -> None:
         raise ValueError("retrieval.default_top_k must be positive")
     if config.shortlist_size <= 0:
         raise ValueError("retrieval.shortlist_size must be positive")
-    if config.patch_match_top_n <= 0:
-        raise ValueError("retrieval.patch_match_top_n must be positive")
     if config.review_session_count <= 0:
         raise ValueError("retrieval.review_session_count must be positive")

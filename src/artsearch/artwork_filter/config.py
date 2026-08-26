@@ -56,7 +56,8 @@ class DownloadConfig(BaseModel):
     prefer_thumbnail: bool = True
     allow_fullsize_fallback: bool = True
     user_agent: str = "ArtSearchResearch/0.1"
-    max_concurrency: int = 8
+    max_concurrency: int = 16
+    fullsize_max_concurrency: int = 24
     max_redirects: int = 5
     allowed_bluesky_image_hosts: list[str] = Field(default_factory=lambda: ["cdn.bsky.app"])
 
@@ -68,8 +69,8 @@ class DownloadConfig(BaseModel):
             raise ValueError("downloads.max_bytes must be positive")
         if self.max_retries < 0:
             raise ValueError("downloads.max_retries must be non-negative")
-        if self.max_concurrency <= 0:
-            raise ValueError("downloads.max_concurrency must be positive")
+        if self.max_concurrency <= 0 or self.fullsize_max_concurrency <= 0:
+            raise ValueError("download concurrency limits must be positive")
         if self.max_redirects < 0:
             raise ValueError("downloads.max_redirects must be non-negative")
         if not self.allowed_bluesky_image_hosts or any(
@@ -104,6 +105,8 @@ class MediaConfig(BaseModel):
 
 class PolicyConfig(BaseModel):
     automatic_accept_enabled: bool = False
+    trust_source_moderation_for_sfw: bool = False
+    source_safe_accepts_demo_eligible: bool = False
     accept_finished_illustration: bool = True
     accept_traditional_art: bool = True
     accept_comic: bool = True

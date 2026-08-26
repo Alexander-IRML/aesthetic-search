@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Collection
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
+import random
 import sqlite3
-from collections.abc import Collection
+from time import perf_counter, sleep
+from typing import Literal
 
 from artsearch.ingest.db import connect, init_db
 from artsearch.production.object_store import (
+    ObjectCollisionError,
     ObjectRef,
     ObjectStore,
     content_addressed_key,
@@ -22,12 +27,25 @@ class CorpusPublishResult:
     unchanged: int = 0
     missing: int = 0
     failed: int = 0
+    bytes_uploaded: int = 0
+    duration_ms: float = 0.0
+    upload_concurrency: int = 1
+    objects_per_second: float = 0.0
+    mib_per_second: float = 0.0
     errors: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
         payload["errors"] = list(self.errors)
         return payload
+
+
+@dataclass(frozen=True)
+class _PublishOutcome:
+    artwork_id: str
+    status: Literal["published", "unchanged", "missing", "failed"]
+    ref: ObjectRef | None = None
+    error: str | None = None
 
 
 def publish_corpus_originals(
@@ -37,9 +55,18 @@ def publish_corpus_originals(
     *,
     namespace: str = "corpus/originals",
     candidate_ids: Collection[str] | None = None,
+    upload_concurrency: int = 1,
+    checkpoint_batch_size: int = 256,
+    max_attempts: int = 4,
+    retry_base_seconds: float = 0.5,
 ) -> CorpusPublishResult:
     """Publish accepted originals and checkpoint immutable object references in SQLite."""
 
+    if upload_concurrency <= 0 or checkpoint_batch_size <= 0 or max_attempts <= 0:
+        raise ValueError("publication concurrency, checkpoint size, and attempts must be positive")
+    if retry_base_seconds < 0:
+        raise ValueError("publication retry delay must be non-negative")
+    started = perf_counter()
     root = Path(project_root).resolve()
     counters = {
         "eligible": 0,
@@ -48,41 +75,128 @@ def publish_corpus_originals(
         "missing": 0,
         "failed": 0,
     }
+    bytes_uploaded = 0
     errors: list[str] = []
     with connect(database_path) as connection:
         init_db(connection)
         rows = _eligible_rows(connection, candidate_ids)
-        counters["eligible"] = len(rows)
-        for row in rows:
-            artwork_id = str(row["artwork_id"])
-            expected_hash = str(row["file_hash"])
-            if row["published_sha256"] == expected_hash and row["published_object_key"]:
+    counters["eligible"] = len(rows)
+    worker_count = min(upload_concurrency, len(rows)) if rows else upload_concurrency
+    with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="object-publish") as pool:
+        for offset in range(0, len(rows), checkpoint_batch_size):
+            batch = rows[offset : offset + checkpoint_batch_size]
+            outcomes = list(
+                pool.map(
+                    lambda row: _publish_row(
+                        row,
+                        root=root,
+                        store=store,
+                        namespace=namespace,
+                        max_attempts=max_attempts,
+                        retry_base_seconds=retry_base_seconds,
+                    ),
+                    batch,
+                )
+            )
+            publishable = [outcome for outcome in outcomes if outcome.ref is not None]
+            if publishable:
                 try:
-                    if store.exists(str(row["published_object_key"])):
-                        counters["unchanged"] += 1
+                    with connect(database_path) as connection:
+                        init_db(connection)
+                        for outcome in publishable:
+                            assert outcome.ref is not None
+                            _upsert_object_ref(connection, outcome.artwork_id, outcome.ref)
+                        connection.commit()
+                except sqlite3.DatabaseError as exc:
+                    detail = str(exc).replace(str(root), "<project>")
+                    counters["failed"] += len(publishable)
+                    for outcome in publishable:
+                        _record_error(
+                            errors,
+                            f"{outcome.artwork_id}: {type(exc).__name__}: {detail}",
+                        )
+                    publishable = []
+
+            checkpointed = {outcome.artwork_id for outcome in publishable}
+            for outcome in outcomes:
+                if outcome.status == "published":
+                    if outcome.artwork_id not in checkpointed:
                         continue
-                except RuntimeError as exc:
-                    _record_error(errors, f"{artwork_id}: checkpoint verification failed: {exc}")
-            source = _resolve_local_path(root, str(row["raw_path"]))
-            if not source.is_file():
-                counters["missing"] += 1
-                _record_error(errors, f"{artwork_id}: local accepted original is missing")
-                continue
-            try:
-                actual_hash, _ = file_identity(source)
-                if actual_hash != expected_hash:
-                    raise ValueError("local original hash differs from SQLite")
-                key = content_addressed_key(namespace, expected_hash, suffix=source.suffix.lower())
-                ref = store.put_file(source, key, expected_sha256=expected_hash)
-                _upsert_object_ref(connection, artwork_id, ref)
-                connection.commit()
-                counters["published"] += 1
-            except (OSError, RuntimeError, ValueError, sqlite3.DatabaseError) as exc:
-                connection.rollback()
-                counters["failed"] += 1
-                detail = str(exc).replace(str(root), "<project>")
-                _record_error(errors, f"{artwork_id}: {type(exc).__name__}: {detail}")
-    return CorpusPublishResult(**counters, errors=tuple(errors))
+                    counters["published"] += 1
+                    if outcome.ref is not None and outcome.ref.created:
+                        bytes_uploaded += outcome.ref.size
+                elif outcome.status == "unchanged":
+                    counters["unchanged"] += 1
+                elif outcome.status == "missing":
+                    counters["missing"] += 1
+                else:
+                    counters["failed"] += 1
+                if outcome.error:
+                    _record_error(errors, outcome.error)
+
+    duration = max(perf_counter() - started, 1e-9)
+    completed = counters["published"] + counters["unchanged"]
+    return CorpusPublishResult(
+        **counters,
+        bytes_uploaded=bytes_uploaded,
+        duration_ms=round(duration * 1000.0, 3),
+        upload_concurrency=worker_count,
+        objects_per_second=round(completed / duration, 3),
+        mib_per_second=round(bytes_uploaded / (1024 * 1024) / duration, 3),
+        errors=tuple(errors),
+    )
+
+
+def _publish_row(
+    row: sqlite3.Row,
+    *,
+    root: Path,
+    store: ObjectStore,
+    namespace: str,
+    max_attempts: int,
+    retry_base_seconds: float,
+) -> _PublishOutcome:
+    artwork_id = str(row["artwork_id"])
+    expected_hash = str(row["file_hash"])
+    source = _resolve_local_path(root, str(row["raw_path"]))
+    if not source.is_file():
+        return _PublishOutcome(
+            artwork_id,
+            "missing",
+            error=f"{artwork_id}: local accepted original is missing",
+        )
+    try:
+        actual_hash, _ = file_identity(source)
+        if actual_hash != expected_hash:
+            raise ValueError("local original hash differs from SQLite")
+        key = content_addressed_key(namespace, expected_hash, suffix=source.suffix.lower())
+    except (OSError, RuntimeError, ValueError) as exc:
+        return _failed_outcome(artwork_id, exc, root)
+
+    for attempt in range(max_attempts):
+        try:
+            if row["published_sha256"] == expected_hash and row["published_object_key"]:
+                if store.exists(str(row["published_object_key"])):
+                    return _PublishOutcome(artwork_id, "unchanged")
+            ref = store.put_file(source, key, expected_sha256=expected_hash)
+            return _PublishOutcome(artwork_id, "published", ref=ref)
+        except ObjectCollisionError as exc:
+            return _failed_outcome(artwork_id, exc, root)
+        except (OSError, RuntimeError) as exc:
+            if attempt + 1 == max_attempts:
+                return _failed_outcome(artwork_id, exc, root)
+            delay = retry_base_seconds * (2**attempt) * (0.75 + random.random() * 0.5)
+            sleep(delay)
+    raise AssertionError("publication retry loop did not return")
+
+
+def _failed_outcome(artwork_id: str, exc: Exception, root: Path) -> _PublishOutcome:
+    detail = str(exc).replace(str(root), "<project>")
+    return _PublishOutcome(
+        artwork_id,
+        "failed",
+        error=f"{artwork_id}: {type(exc).__name__}: {detail}",
+    )
 
 
 def candidate_ids_from_jsonl(

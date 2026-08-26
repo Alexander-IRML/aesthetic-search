@@ -17,8 +17,13 @@ duplicates:
 models:
   clip_model_name: openai/clip-vit-base-patch32
   clip_model_version: 3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268
-  dino_model_name: facebook/dinov2-with-registers-base
-  dino_model_version: a1d738ccfa7ae170945f210395d99dde8adb1805
+  # CSD ViT-L style head converted from the authors' released checkpoint.
+  csd_model_name: yuxi-liu-wired/CSD
+  csd_model_version: cd2dac3ad9398e42906127bc44988a6de47abe68
+  csd_model_filename: csd_clip_model_pytorch.safetensors
+  csd_model_sha256: 02d842ed2536e1f883fc832cd1566d0e6c569457979f878379e382e04b2bda84
+  csd_processor_name: openai/clip-vit-large-patch14
+  csd_processor_version: 32bd64288804d66eefd0ccbe215aa642df71cc41
 
 embeddings:
   batch_size: 4
@@ -27,7 +32,6 @@ embeddings:
 retrieval:
   default_top_k: 12
   shortlist_size: 100
-  patch_match_top_n: 1
   review_session_count: 3
   demo_output: data/search_demo.html
   gallery_output: data/search_gallery.html

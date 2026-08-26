@@ -793,22 +793,20 @@ _TEMPLATE = """<!doctype html>
       const retrieval = item.retrieval;
       if (!retrieval) return "";
       const components = retrieval.components || {};
-      const patch = components.patch;
-      const pooled = components.pooled;
+      const fusion = components.fusion;
       const clip = components.clip;
+      const style = components.style;
       const lines = [];
-      if (patch) {
-        lines.push(`<div class="${retrieval.orderingSignal === "patch" ? "final-signal" : ""}">
-          Patch ${retrieval.orderingSignal === "patch" ? "final" : "signal"}:
-          #${patch.rank ?? "-"} | ${score(patch.score)}
-          ${retrieval.patchMatchTopN ? `| top-${retrieval.patchMatchTopN}` : ""}
+      if (fusion) {
+        lines.push(`<div class="${retrieval.orderingSignal === "fusion" ? "final-signal" : ""}">
+          Fusion final: #${fusion.rank ?? "-"} | ${score(fusion.score)}
         </div>`);
       }
-      if (pooled) {
-        lines.push(`<div>Pooled recall: #${pooled.rank ?? "-"} | ${score(pooled.score)}</div>`);
-      }
       if (clip) {
-        lines.push(`<div>CLIP semantic lens: #${clip.rank ?? "-"} | ${score(clip.score)}</div>`);
+        lines.push(`<div>CLIP subject: #${clip.rank ?? "-"} | ${score(clip.score)}</div>`);
+      }
+      if (style) {
+        lines.push(`<div>CSD style: #${style.rank ?? "-"} | ${score(style.score)}</div>`);
       }
       if (retrieval.shortlistSize != null) {
         lines.push(`<div class="subtle">Shortlist ${retrieval.shortlistSize} of ${retrieval.candidateCount}</div>`);
@@ -974,15 +972,14 @@ _TEMPLATE = """<!doctype html>
         rank,
         result_count: modeEntry.results.length,
         score: Number(candidate.score),
-        pooled_score: candidate.retrieval?.components?.pooled?.score ?? null,
-        pooled_rank: candidate.retrieval?.components?.pooled?.rank ?? null,
-        patch_score: candidate.retrieval?.components?.patch?.score ?? null,
-        patch_rank: candidate.retrieval?.components?.patch?.rank ?? null,
+        fusion_score: candidate.retrieval?.components?.fusion?.score ?? null,
+        fusion_rank: candidate.retrieval?.components?.fusion?.rank ?? null,
         clip_score: candidate.retrieval?.components?.clip?.score ?? null,
         clip_rank: candidate.retrieval?.components?.clip?.rank ?? null,
+        style_score: candidate.retrieval?.components?.style?.score ?? null,
+        style_rank: candidate.retrieval?.components?.style?.rank ?? null,
         shortlist_size: candidate.retrieval?.shortlistSize ?? null,
         candidate_count: candidate.retrieval?.candidateCount ?? null,
-        patch_match_top_n: candidate.retrieval?.patchMatchTopN ?? null,
         query_artist_id: query.artistId,
         candidate_artist_id: candidate.artistId,
         model_id: model.modelId || "unknown",
@@ -1191,23 +1188,23 @@ _TEMPLATE = """<!doctype html>
       byId("funnelStats").innerHTML = `
         <table>
           <thead><tr>
-            <th>Two-stage funnel diagnostics</th>
+            <th>Multi-retriever fusion diagnostics</th>
             <th>Observed value</th>
           </tr></thead>
           <tbody>
-            <tr><td>Queries compared with full-corpus patch baseline</td>
+            <tr><td>Queries compared across ensemble, CLIP, and CSD</td>
               <td>${funnel.queryCount ?? 0}</td></tr>
-            <tr><td>Full-patch top-k retained in ensemble top-k</td>
-              <td>${pct(funnel.meanPatchTopKAgreement)}</td></tr>
-            <tr><td>Exact final order matches full-patch order</td>
-              <td>${funnel.exactPatchOrderMatches ?? 0} / ${funnel.queryCount ?? 0}</td></tr>
+            <tr><td>CLIP top-k retained in ensemble top-k</td>
+              <td>${pct(funnel.meanClipTopKAgreement)}</td></tr>
+            <tr><td>CSD top-k retained in ensemble top-k</td>
+              <td>${pct(funnel.meanStyleTopKAgreement)}</td></tr>
             <tr><td>Mean shortlist / eligible candidates</td>
               <td>${score(funnel.meanShortlistSize)} / ${score(funnel.meanCandidateCount)}
                 (${pct(funnel.meanShortlistFraction)})</td></tr>
-            <tr><td>Mean absolute pooled-rank to final-rank movement</td>
-              <td>${score(funnel.meanPooledToFinalMovement)}</td></tr>
             <tr><td>Mean absolute CLIP-rank to final-rank disagreement</td>
               <td>${score(funnel.meanClipToFinalMovement)}</td></tr>
+            <tr><td>Mean absolute CSD-rank to final-rank disagreement</td>
+              <td>${score(funnel.meanStyleToFinalMovement)}</td></tr>
           </tbody>
         </table>
       `;

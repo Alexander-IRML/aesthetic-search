@@ -79,7 +79,7 @@ def generate_embeddings_for_config(
                         level="info",
                         event_type="embedding_computed",
                         artwork_id=artwork_id,
-                        message="Computed CLIP and DINO embeddings",
+                        message="Computed CLIP subject and CSD style embeddings",
                     )
                     processed += 1
             except Exception as exc:

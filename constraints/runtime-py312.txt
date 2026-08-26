@@ -1,0 +1,27 @@
+# Direct dependency versions exercised by the Python 3.12 container contract.
+# Airflow uses its own upstream constraints in addition to these application pins.
+alembic==1.19.1
+fastapi==0.141.1
+httpx==0.28.1
+imagehash==4.3.2
+numpy==2.5.1
+pandas==2.3.3
+pgvector==0.5.0
+pillow==12.3.0
+polars==1.43.2
+psycopg==3.3.4
+psycopg-binary==3.3.4
+psycopg-pool==3.3.1
+pydantic==2.13.4
+pytest==9.1.1
+python-multipart==0.0.32
+pyyaml==6.0.3
+qdrant-client==1.18.0
+ruff==0.15.20
+s3fs==2026.7.0
+safetensors==0.8.0
+sqlalchemy==2.0.52
+torch==2.13.0
+torchvision==0.28.0
+transformers==5.13.0
+uvicorn==0.51.0

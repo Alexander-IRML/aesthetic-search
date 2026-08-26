@@ -2,11 +2,11 @@
 
 Status: implemented local/Cloud-ready vertical slice
 
-Implemented: 2026-08-13
+Updated for CSD: 2026-08-20
 
 Qdrant is a derived online serving index. It does not replace the canonical
 SQLite metadata database, immutable accepted images in object storage, or the
-CLIP/DINO embedding workers. Losing a Qdrant collection must be recoverable by
+CLIP/CSD embedding workers. Losing a Qdrant collection must be recoverable by
 creating a new physical collection and syncing current canonical rows.
 
 ## Retrieval Contract
@@ -17,17 +17,17 @@ One Qdrant point represents one explicitly demo-approved artwork:
 | --- | --- |
 | Point ID | Deterministic UUIDv5 derived from `artwork_id` |
 | `clip_subject` | 512-dimensional normalized CLIP cosine vector |
-| `dino_global` | 768-dimensional normalized DINOv2 cosine vector |
+| `csd_style` | 768-dimensional normalized Contrastive Style Descriptor cosine vector |
 | Payload | Compact filtering and model-lineage fields only |
 
-The initial physical collection is `artworks_clip3_dino1_v1`; reads use the
-stable `artworks_active` alias. Model migrations build and validate a different
-physical collection before atomically moving the alias.
+The current physical collection is `artworks_clip3_csd1_v2`; reads use the
+stable `artworks_active` alias. The complete 8,279-artwork corpus was built and
+validated there before the alias moved from v1; v1 remains the rollback target.
+Future model or corpus migrations follow the same immutable-collection process.
 
-The Cloud configuration uses float16 storage for both global vectors. DINO
-patch matrices remain outside Qdrant and are loaded only for the fused
-shortlist. This avoids multiplying index storage by hundreds of patch vectors
-per artwork.
+The Cloud configuration uses float16 storage for both vectors. The previous
+DINO patch matrices and late-interaction stage are not part of the current
+serving contract.
 
 ## Eligibility Policy
 
@@ -40,16 +40,19 @@ not an exact-duplicate child
 demo_eligible = true
 is_sfw = true
 current configured CLIP embedding
-current configured DINO embedding
+current configured CSD embedding
 latest Bluesky filter decision = ACCEPT
 ```
 
-`is_sfw` and `demo_eligible` are independent from SigLIP's artwork decision.
-SigLIP answers whether an image is useful artwork; it is not an NSFW detector
-and cannot grant alpha-display approval.
+`is_sfw` and `demo_eligible` remain independent from SigLIP's artwork decision.
+SigLIP answers whether an image is useful artwork; it is not an NSFW detector.
+For Bluesky intake, a separate versioned source gate removes configured adult
+labels and text signals before candidate creation. An accepted image carrying
+evidence that it passed that gate is marked SFW and demo-eligible by the current
+policy. Local, legacy, and source-unverified rows remain unknown.
 
-Existing databases migrate `demo_eligible` to false. Therefore the first sync
-is deliberately empty until policy is reviewed. Inspect the state with:
+Existing databases migrate `demo_eligible` to false and are not retroactively
+assumed safe. Inspect the state with:
 
 ```bash
 .venv/bin/artsearch-qdrant eligibility
@@ -64,8 +67,9 @@ Approve a specific reviewed artwork explicitly:
   --demo-eligible
 ```
 
-The command accepts repeated `--artwork-id` values. No bulk "assume everything
-is safe" default exists.
+The command accepts repeated `--artwork-id` values. Source moderation is
+auditable per candidate and does not create a bulk safety assumption for older
+rows.
 
 ## Query Funnel
 
@@ -74,18 +78,15 @@ An image-to-image request performs:
 ```text
 CLIP subject HNSW prefetch, top 200 ──┐
                                       ├─ Qdrant RRF, top 100
-DINO global HNSW prefetch, top 200 ───┘
-                                               |
-                                               v
-                               exact DINO patch MaxSim, top 50
-                                               |
-                                               v
-                              max two results per artist, top 20
+CSD style HNSW prefetch, top 200 ─────┘
+                                      |
+                                      v
+                     max two results per artist, top 20
 ```
 
-CLIP and DINO are never concatenated. Qdrant records each retriever's raw score
-and rank plus the RRF rank; local patch reranking records its own score and
-rank. Text queries use CLIP only because DINO has no text encoder.
+CLIP and CSD are never concatenated. Qdrant records each retriever's raw score
+and rank plus the RRF score and rank. Text queries use CLIP only because CSD is
+an image style descriptor, not a text encoder.
 
 The first fusion policy is unweighted reciprocal-rank fusion. Human retrieval
 judgments can later tune weighted RRF or a learned fusion policy without
@@ -161,12 +162,12 @@ exact search for each named vector:
 ```bash
 .venv/bin/artsearch-qdrant evaluate-ann \
   --sample-size 50 \
-  --top-k 20 \
+  --top-k 100 \
   --seed 20260813
 ```
 
-The JSON report includes mean/minimum recall@K plus approximate and exact
-p50/p95 latency for CLIP and DINO separately. Tune `hnsw_ef` from measured
+The JSON report includes mean/minimum Recall@100 plus approximate and exact
+p50/p95 latency for CLIP and CSD separately. Tune `hnsw_ef` from measured
 recall and latency; do not tune it from a generic benchmark.
 
 ## Airflow Integration
@@ -176,7 +177,7 @@ The intake DAG now executes:
 ```text
 collect + SigLIP filter
     -> publish accepted originals
-    -> generate current CLIP/DINO/patch embeddings
+    -> generate current CLIP/CSD embeddings
     -> reconcile Qdrant and promote the alias
     -> build Polars manifests and metrics
     -> publish the immutable run bundle
@@ -191,9 +192,12 @@ policy.
 
 - The local/Cloud index is single-node and has no availability guarantee.
 - Sparse lexical retrieval is not present yet.
-- Alpha query/session/click telemetry is not present yet.
-- Patch artifacts still use the current full SQLite matrices; compact patch
-  storage remains the next storage optimization.
+- Alpha query/session telemetry, top-100 ranking evidence, top-10 impressions,
+  and Great/Good/Bad relevance feedback are persisted in PostgreSQL.
+- The CSD checkpoint is a converted safetensors artifact pinned by repository
+  revision and SHA-256; its quality must be measured on ArtSearch judgments.
+- Local-detail late interaction is intentionally absent after retiring DINO
+  patches. Add a replacement only when evaluation demonstrates the need.
 - HNSW quality has a measurement command, but no large-corpus benchmark should
   be claimed until it is run against representative filters and judgments.
 
@@ -205,3 +209,5 @@ policy.
 - [Qdrant vector datatypes](https://qdrant.tech/documentation/manage-data/vectors/)
 - [Qdrant payload indexes](https://qdrant.tech/documentation/search/text-search/text-filtering/)
 - [Qdrant capacity planning](https://qdrant.tech/documentation/operations/capacity-planning/)
+- [Contrastive Style Descriptors paper](https://arxiv.org/abs/2404.01292)
+- [CSD authors' implementation](https://github.com/learn2phoenix/CSD)

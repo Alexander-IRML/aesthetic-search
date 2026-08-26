@@ -3,6 +3,110 @@
 Project changes worth remembering live here. Keep entries concise and focused on
 what changed, why it matters, and any verification that was done.
 
+## v0.5.0 - 2026-08-26
+
+### Highlights
+
+- Shipped the first invite-only cloud alpha: browser image upload, exact
+  CLIP/CSD query encoding, Qdrant multi-vector retrieval, Neon catalog and
+  telemetry, and private R2 result delivery through Cloudflare.
+- Replaced the DINO global/patch retrieval contract with a smaller and clearer
+  CLIP subject plus CSD artistic-style fusion contract.
+- Moved the production metadata boundary from laptop SQLite to PostgreSQL while
+  retaining SQLite for resumable intake staging and offline repair.
+
+### Added
+
+- Added a same-origin FastAPI search workbench with bounded JPEG/PNG/WebP
+  uploads, fixed top-10 results, source attribution, stable error envelopes,
+  health checks, and Great/Good/Bad relevance feedback.
+- Added exact pinned CLIP and CSD query encoders, Qdrant named-vector prefetch
+  plus reciprocal-rank fusion, per-artist result diversity, and strict active-
+  index model-lineage validation.
+- Added durable query, top-100 candidate, top-10 impression, timing, model,
+  index, and graded-feedback telemetry with dashboard p50/p95, judged hit rate,
+  Precision@10, nDCG@10, and exact-versus-HNSW Recall@100 reporting.
+- Added a Cloudflare Worker and scale-to-zero Container deployment with a
+  private R2 binding, one-container cost ceiling, signed 12-hour alpha sessions,
+  an access-code gate that runs before container wake, and managed runtime
+  secrets.
+- Added resumable 5,000-candidate daily and 20,000-candidate bulk intake
+  launchers, rotating Bluesky roster checkpoints, R2 credential canaries, and
+  bounded parallel accepted-object publication.
+- Added a Python 3.12 container contract with 3.12.14 control, CPU-ML, and test
+  targets plus the official Airflow 3.3.1 Python 3.12 base. The local Compose
+  stack includes PostgreSQL, Qdrant, Alembic, the review dashboard, Airflow,
+  and an opt-in ML toolbox.
+- Added tested direct-dependency constraints, Airflow upstream constraints,
+  build-time `pip check`, non-root application execution, private loopback port
+  publication, persistent service volumes, and static container-contract tests.
+- Pinned pandas 2.3.3 in the Airflow/Spark image after a live Spark 4.2 smoke
+  test exposed PySpark's incomplete pandas 3.x support warning.
+- Added a Neon-ready PostgreSQL 17 control plane using SQLAlchemy Core,
+  Alembic, psycopg 3, `pgvector`, `pg_trgm`, UUIDv7 identifiers, and
+  RLS-ready product telemetry.
+- Added guarded, idempotent SQLite snapshot publication with candidate-scoped
+  daily imports, exact row verification, model lineage, and compact CLIP/CSD
+  `halfvec` archival vectors.
+- Added a transactional PostgreSQL outbox that repairs and publishes the
+  canonical demo-eligible corpus to Qdrant with bounded claims, retries,
+  drift detection, and deterministic point identities.
+- Added query, ranking-stage, impression, click, preference, save, follow, and
+  reformulation repositories plus a configurable 180-day telemetry-retention
+  job.
+- Added `artsearch-postgres` migration, status, publication, retention, and
+  Qdrant-drain commands, including separate pooled runtime and direct migration
+  connection handling.
+
+### Changed
+
+- Replaced DINO pooled and patch representations with a pinned, checksum-
+  verified 768-dimensional Contrastive Style Descriptor.
+- Replaced patch MaxSim ranking with transparent reciprocal-rank fusion over
+  independent CLIP subject and CSD style recall lists.
+- Migrated SQLite, Qdrant, dashboards, human judgments, model monitoring,
+  configuration, and architecture documentation to the CLIP/CSD contract.
+- Added the `artworks_clip3_csd1_v1` physical collection contract so legacy
+  DINO vectors cannot be mixed into the current serving index.
+- Built and promoted `artworks_clip3_csd1_v2` with all 8,279 approved artworks,
+  retaining v1 as an atomic rollback target.
+- Corrected pre-promotion ANN evaluation to compare approximate and exact
+  searches on the same physical collection instead of mixing the live alias
+  with the candidate collection.
+- Retained parsing support for historical DINO judgment evidence while removing
+  active DINO and patch commands.
+- Made PostgreSQL the canonical cloud metadata and workflow authority while
+  retaining SQLite as worker-local staging and offline-development storage.
+- Updated the Airflow intake DAG to publish each completed SQLite candidate
+  scope to PostgreSQL before draining its committed Qdrant outbox.
+
+### Safety And Privacy
+
+- Kept database credentials in the ignored `deploy/alpha/.env` file, validated
+  TLS requirements without logging URLs, and kept local images, SQLite files,
+  model caches, and generated artifacts ignored.
+- Kept query uploads in memory only, served corpus media through an
+  authenticated read-only Worker binding, and prevented unauthenticated
+  requests from waking paid model compute.
+- Extended Git and Docker exclusions for environment variants, private keys,
+  local databases, corpus/vector products, model weights, and profiling output.
+
+### Verified
+
+- `python -m pytest -q`: 234 tests passed and 2 optional tests skipped.
+- The Cloudflare Worker TypeScript check, container deployment, access matrix,
+  readiness probe, authenticated R2 media fetch, and a real 10-result image
+  search completed successfully.
+- Neon schema migration `20260823_0003`, the 8,279-artwork catalog, the
+  `artworks_active` Qdrant alias, point-count parity, and exact-versus-HNSW ANN
+  checks were verified before release.
+- Secret-pattern scans found only explicit placeholders and test fixtures among
+  commit candidates; no image, database, vector, model-weight, roster, or local
+  environment file is tracked.
+
+See [the detailed v0.5.0 release notes](docs/releases/v0.5.0.md) for the alpha
+architecture, verification record, and known limitations.
+
 ## v0.3.2 - 2026-08-13
 
 ### Highlights

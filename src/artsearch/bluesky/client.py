@@ -140,12 +140,13 @@ class BlueskyClient:
         self,
         actor: str,
         *,
+        cursor: str | None = None,
         max_pages: int | None = None,
         limit: int | None = None,
         feed_filter: str | None = None,
     ) -> AsyncIterator[AuthorFeedPage]:
         page_count = 0
-        cursor: str | None = None
+        next_cursor = cursor
         page_cap = max_pages if max_pages is not None else self.config.api.max_pages
         if page_cap < 1:
             raise ValueError("max_pages must be positive")
@@ -153,7 +154,7 @@ class BlueskyClient:
         while page_count < page_cap:
             page = await self.get_author_feed(
                 actor,
-                cursor=cursor,
+                cursor=next_cursor,
                 limit=limit,
                 feed_filter=feed_filter,
             )
@@ -161,7 +162,7 @@ class BlueskyClient:
             page_count += 1
             if not page.cursor:
                 break
-            cursor = page.cursor
+            next_cursor = page.cursor
 
 
 def _response_error_message(response: httpx.Response, actor: str) -> str:

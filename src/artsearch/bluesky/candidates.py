@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass
 import re
 from typing import Any
 import unicodedata
@@ -9,6 +10,18 @@ from artsearch.artwork_filter.hashing import make_candidate_id
 from artsearch.artwork_filter.schemas import ImageCandidate
 from artsearch.bluesky.client import BlueskyClient
 from artsearch.bluesky.config import BlueskyModerationConfig
+
+
+@dataclass
+class AuthorScanProgress:
+    """Mutable scan evidence used to advance an actor high-water mark safely."""
+
+    newest_post_uri: str | None = None
+    pages_seen: int = 0
+    reached_high_water: bool = False
+    feed_exhausted: bool = False
+    candidate_limit_reached: bool = False
+    next_cursor: str | None = None
 
 
 def candidates_from_feed_item(
@@ -70,6 +83,9 @@ def candidates_from_feed_item(
                 else [],
                 content_labels=content_labels,
                 author_labels=author_labels,
+                source_moderation_passed=bool(
+                    moderation is not None and moderation.public_safe_mode
+                ),
                 is_repost=is_repost,
                 is_quote_post=is_quote_post,
                 quoted_author_did=quoted_author_did,
@@ -88,17 +104,42 @@ async def iter_author_image_candidates(
     max_pages: int | None = None,
     limit: int | None = None,
     feed_filter: str | None = None,
+    max_candidates: int | None = None,
     moderation: BlueskyModerationConfig | None = None,
+    cursor: str | None = None,
+    stop_post_uri: str | None = None,
+    progress: AuthorScanProgress | None = None,
 ) -> AsyncIterator[ImageCandidate]:
+    if max_candidates is not None and max_candidates <= 0:
+        raise ValueError("max_candidates must be positive")
+    emitted = 0
     async for page in client.iter_author_feed(
         actor,
+        cursor=cursor,
         max_pages=max_pages,
         limit=limit,
         feed_filter=feed_filter,
     ):
+        if progress is not None:
+            progress.pages_seen += 1
+            progress.next_cursor = page.cursor
+            if page.cursor is None:
+                progress.feed_exhausted = True
         for item in page.feed:
+            post_uri = _feed_item_post_uri(item)
+            if progress is not None and progress.newest_post_uri is None and post_uri:
+                progress.newest_post_uri = post_uri
+            if stop_post_uri and post_uri == stop_post_uri:
+                if progress is not None:
+                    progress.reached_high_water = True
+                return
             for candidate in candidates_from_feed_item(item, moderation=moderation):
                 yield candidate
+                emitted += 1
+                if max_candidates is not None and emitted >= max_candidates:
+                    if progress is not None:
+                        progress.candidate_limit_reached = True
+                    return
 
 
 def moderation_reasons_from_feed_item(
@@ -172,6 +213,11 @@ def _quote_metadata(embed: Mapping[str, Any]) -> tuple[bool, str | None]:
 def _is_repost(item: Mapping[str, Any]) -> bool:
     reason = _mapping(item.get("reason"))
     return bool(reason and reason.get("$type") == "app.bsky.feed.defs#reasonRepost")
+
+
+def _feed_item_post_uri(item: Mapping[str, Any]) -> str | None:
+    post = _mapping(item.get("post")) or {}
+    return _string(post.get("uri"))
 
 
 def _mapping(value: object) -> Mapping[str, Any] | None:

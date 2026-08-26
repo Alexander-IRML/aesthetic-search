@@ -66,11 +66,12 @@ def test_service_uses_cached_image_embedding_on_repeat(tmp_path):
     assert first.visual_scores.embedding_cache_key == second.visual_scores.embedding_cache_key
 
 
-def test_default_policy_routes_high_scoring_art_to_review_until_accept_is_enabled(tmp_path):
+def test_disabled_policy_routes_high_scoring_art_to_review(tmp_path):
     image_path = tmp_path / "image.jpg"
     Image.new("RGB", (512, 512), (20, 40, 60)).save(image_path)
     config = load_artwork_filter_config()
     config.media.review_low_variance = False
+    config.policy.automatic_accept_enabled = False
     service = ArtworkFilterService(config, visual_classifier=FakeVisualClassifier())
 
     result = asyncio.run(
@@ -82,3 +83,32 @@ def test_default_policy_routes_high_scoring_art_to_review_until_accept_is_enable
     assert result.decision == FilterDecision.REVIEW
     assert result.accepted_for_main_corpus is False
     assert result.reason_codes == ["review.automatic_accept_disabled"]
+
+
+def test_default_policy_enables_high_confidence_automatic_acceptance():
+    config = load_artwork_filter_config()
+
+    assert config.policy.automatic_accept_enabled is True
+
+
+def test_force_review_rule_still_overrides_automatic_acceptance(tmp_path):
+    image_path = tmp_path / "image.jpg"
+    Image.new("RGB", (512, 512), (20, 40, 60)).save(image_path)
+    config = load_artwork_filter_config()
+    config.media.review_low_variance = False
+    service = ArtworkFilterService(config, visual_classifier=FakeVisualClassifier())
+
+    result = asyncio.run(
+        service.classify(
+            ImageCandidate(
+                candidate_id="candidate",
+                local_path=image_path,
+                is_repost=True,
+                source="test",
+            )
+        )
+    )
+
+    assert result.decision == FilterDecision.REVIEW
+    assert result.accepted_for_main_corpus is False
+    assert "review.repost_provenance" in result.reason_codes

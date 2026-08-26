@@ -8,8 +8,6 @@ import webbrowser
 
 from artsearch.artwork_filter.gallery import write_bluesky_gallery
 from artsearch.ingest.config import load_config
-from artsearch.ingest.db import connect, init_db
-from artsearch.retrieval.diagnostics import patch_maxsim_diagnostics
 from artsearch.retrieval.demo import write_gallery_demo, write_search_demo
 from artsearch.retrieval.evaluation import (
     evaluate_retrieval_judgments,
@@ -191,38 +189,6 @@ def open_gallery_main() -> None:
         print(f"Wrote fresh gallery demo: {output_path}")
     if not args.no_open:
         _open_path(output_path)
-
-
-def patch_diagnostics_main() -> None:
-    parser = argparse.ArgumentParser(description="Inspect DINO patch MaxSim matches.")
-    parser.add_argument("query_artwork_id")
-    parser.add_argument("candidate_artwork_id")
-    parser.add_argument("--config", default="config/config.yaml")
-    parser.add_argument("--top-n", type=int, default=20)
-    args = parser.parse_args()
-
-    config = load_config(args.config)
-    with connect(config.database_path) as conn:
-        init_db(conn)
-        matches = patch_maxsim_diagnostics(
-            conn,
-            config,
-            args.query_artwork_id,
-            args.candidate_artwork_id,
-            top_n=args.top_n,
-        )
-
-    print("query_patch\tcandidate_patch\tquery_row\tquery_col\tcandidate_row\tcandidate_col\tscore")
-    for match in matches:
-        print(
-            f"{match.query_patch_index}\t"
-            f"{match.candidate_patch_index}\t"
-            f"{match.query_row}\t"
-            f"{match.query_col}\t"
-            f"{match.candidate_row}\t"
-            f"{match.candidate_col}\t"
-            f"{match.score:.6f}"
-        )
 
 
 def retrieval_evaluate_main() -> None:

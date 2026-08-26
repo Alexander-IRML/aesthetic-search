@@ -37,10 +37,14 @@ def iter_candidate_batches(
                     raise CandidateInputError(
                         f"invalid candidate JSONL at {input_path}:{line_number}: {exc}"
                     ) from exc
-                if candidate.candidate_id in skipped or (
-                    candidate.candidate_id,
-                    candidate.post_cid,
-                ) in skipped_versions:
+                if (
+                    candidate.candidate_id in skipped
+                    or (
+                        candidate.candidate_id,
+                        candidate.post_cid,
+                    )
+                    in skipped_versions
+                ):
                     if on_skip is not None:
                         on_skip(candidate)
                     continue
@@ -152,10 +156,17 @@ def completed_candidate_keys(
                     continue
                 visual = row.get("visual_scores")
                 row_revision = visual.get("model_revision") if isinstance(visual, dict) else None
+                rule_result = row.get("rule_result")
+                deterministic_force_reject = (
+                    row.get("decision") == "reject"
+                    and visual is None
+                    and isinstance(rule_result, dict)
+                    and rule_result.get("disposition") == "force_reject"
+                )
                 if (
                     row.get("config_hash") == config_hash
                     and row.get("model_version") == model_id
-                    and row_revision == model_revision
+                    and (row_revision == model_revision or deterministic_force_reject)
                     and row.get("prompt_version") == prompt_version
                     and row.get("decision") in {"accept", "review", "reject"}
                     and isinstance(row.get("candidate_id"), str)

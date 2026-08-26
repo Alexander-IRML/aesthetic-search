@@ -37,9 +37,7 @@ def write_search_demo(
 ) -> Path:
     config = load_config(config_path)
     destination = (
-        Path(output_path)
-        if output_path is not None
-        else config.retrieval.demo_output_path
+        Path(output_path) if output_path is not None else config.retrieval.demo_output_path
     )
     if not destination.is_absolute():
         destination = config.root_dir / destination
@@ -65,9 +63,7 @@ def write_search_demo(
                 mode=retrieval_mode,
                 filters=filters,
             )
-            mode_payloads.append(
-                _mode_payload(config, destination, retrieval_mode, query, results)
-            )
+            mode_payloads.append(_mode_payload(config, destination, retrieval_mode, query, results))
 
     destination.write_text(
         _render_search_html(
@@ -105,9 +101,7 @@ def write_gallery_demo(
         raise ValueError("review_session_count must be positive")
     resolved_review_seed = review_seed or secrets.token_hex(8)
     destination = (
-        Path(output_path)
-        if output_path is not None
-        else config.retrieval.gallery_output_path
+        Path(output_path) if output_path is not None else config.retrieval.gallery_output_path
     )
     if not destination.is_absolute():
         destination = config.root_dir / destination
@@ -213,7 +207,7 @@ def write_gallery_demo(
     destination.write_text(
         render_gallery_html(
             {
-                "schemaVersion": "3.0",
+                "schemaVersion": "4.0",
                 "dashboardId": dashboard_id,
                 "generatedAt": generated_at.isoformat(),
                 "corpusFingerprint": corpus_fingerprint,
@@ -263,23 +257,18 @@ def _mode_info(mode: RetrievalMode) -> dict:
     task, question, role = {
         RetrievalMode.ENSEMBLE: (
             "ensemble",
-            "Is this a useful overall visual match after global recall and local reranking?",
-            "DINO pooled shortlist, DINO patch rerank, CLIP semantic evidence",
+            "Is this a useful overall match after semantic and style fusion?",
+            "Reciprocal-rank fusion of CLIP subject and CSD style retrieval",
         ),
         RetrievalMode.CLIP_SUBJECT: (
             "subject",
             "Is this a useful subject or semantic match?",
             "Global semantic image vector",
         ),
-        RetrievalMode.DINO_POOLED: (
+        RetrievalMode.CSD_STYLE: (
             "style",
-            "Is this a useful style or global visual-feel match?",
-            "Global visual/style baseline",
-        ),
-        RetrievalMode.DINO_PATCH_MAXSIM: (
-            "local_detail",
-            "Does this share a useful local item, form, or structural detail?",
-            "Patch-token late interaction",
+            "Is this a useful artistic-style match?",
+            "Global Contrastive Style Descriptor",
         ),
     }[mode]
     return {
@@ -316,10 +305,7 @@ def _gallery_payload(
     return {
         "mode": _mode_info(mode),
         "query": _demo_item(config, destination, query, evidence),
-        "results": [
-            _demo_item(config, destination, result, evidence)
-            for result in results
-        ],
+        "results": [_demo_item(config, destination, result, evidence) for result in results],
     }
 
 
@@ -345,37 +331,32 @@ def _demo_item(
 
 def _retrieval_evidence(result: SearchResult) -> dict | None:
     components = {
-        "pooled": {
-            "score": result.pooled_score,
-            "rank": result.pooled_rank,
-            "role": "stage_1_recall",
-        },
-        "patch": {
-            "score": result.patch_score,
-            "rank": result.patch_rank,
-            "role": "stage_2_rerank",
+        "fusion": {
+            "score": result.fusion_score,
+            "rank": result.fusion_rank,
+            "role": "final_rrf_order",
         },
         "clip": {
             "score": result.clip_score,
             "rank": result.clip_rank,
-            "role": "parallel_semantic_evidence",
+            "role": "semantic_subject_recall",
+        },
+        "style": {
+            "score": result.style_score,
+            "rank": result.style_rank,
+            "role": "csd_style_recall",
         },
     }
     available = {
-        name: component
-        for name, component in components.items()
-        if component["score"] is not None
+        name: component for name, component in components.items() if component["score"] is not None
     }
     if not available:
         return None
     return {
-        "orderingSignal": (
-            "patch" if result.mode == RetrievalMode.ENSEMBLE else result.mode.value
-        ),
+        "orderingSignal": "fusion" if result.mode == RetrievalMode.ENSEMBLE else result.mode.value,
         "components": available,
         "shortlistSize": result.shortlist_size,
         "candidateCount": result.candidate_count,
-        "patchMatchTopN": result.patch_match_top_n,
     }
 
 
@@ -417,15 +398,15 @@ def _sample_gallery_queries(
           JOIN embeddings ON embeddings.artwork_id = artworks.artwork_id
          WHERE artworks.validated = 1
            AND artworks.processed_path IS NOT NULL
-           AND embeddings.model_name_dino = ?
-           AND embeddings.model_version_dino = ?
+           AND embeddings.model_name_csd = ?
+           AND embeddings.model_version_csd = ?
            AND embeddings.model_name_clip = ?
            AND embeddings.model_version_clip = ?
          ORDER BY artists.display_name, artworks.artwork_id
         """,
         (
-            config.models.dino_model_name,
-            config.models.dino_model_version,
+            config.models.csd_model_name,
+            config.models.csd_model_version,
             config.models.clip_model_name,
             config.models.clip_model_version,
         ),
@@ -599,8 +580,8 @@ def _corpus_fingerprint(conn: sqlite3.Connection) -> str:
             artworks.file_hash,
             embeddings.model_name_clip,
             embeddings.model_version_clip,
-            embeddings.model_name_dino,
-            embeddings.model_version_dino
+            embeddings.model_name_csd,
+            embeddings.model_version_csd
           FROM artworks
           JOIN embeddings ON embeddings.artwork_id = artworks.artwork_id
          WHERE artworks.validated = 1
@@ -619,11 +600,10 @@ def _model_info(
 ) -> list[dict]:
     shape = conn.execute(
         """
-        SELECT clip_dim, dino_pooled_dim, dino_patch_grid_size, dino_patch_dim
+        SELECT clip_dim, csd_style_dim
           FROM embeddings
          WHERE clip_vector IS NOT NULL
-           AND dino_pooled IS NOT NULL
-           AND dino_patches IS NOT NULL
+           AND csd_style IS NOT NULL
          LIMIT 1
         """
     ).fetchone()
@@ -640,17 +620,16 @@ def _model_info(
         },
         {
             "stage": "Retrieval orchestrator",
-            "signal": "Two-stage DINO ensemble",
+            "signal": "CLIP + CSD ensemble",
             "mode": RetrievalMode.ENSEMBLE.value,
-            "modelId": config.models.dino_model_name,
-            "revision": config.models.dino_model_version,
+            "modelId": f"{config.models.clip_model_name} + {config.models.csd_model_name}",
+            "revision": (f"{config.models.clip_model_version} + {config.models.csd_model_version}"),
             "representation": (
-                f"pooled full-corpus top-{config.retrieval.shortlist_size} shortlist, "
-                f"then patch top-{config.retrieval.patch_match_top_n} late interaction"
+                f"independent top-{config.retrieval.shortlist_size} semantic and style recall lists"
             ),
             "decision": (
-                "final order comes from patch reranking; CLIP is reported separately "
-                "and does not alter rank"
+                "candidate union is ordered by reciprocal-rank fusion; component "
+                "similarities and ranks remain visible"
             ),
         },
         {
@@ -666,30 +645,16 @@ def _model_info(
         },
         {
             "stage": "Retrieval",
-            "signal": "DINO style / global",
-            "mode": RetrievalMode.DINO_POOLED.value,
-            "modelId": config.models.dino_model_name,
-            "revision": config.models.dino_model_version,
+            "signal": "CSD artistic style",
+            "mode": RetrievalMode.CSD_STYLE.value,
+            "modelId": config.models.csd_model_name,
+            "revision": config.models.csd_model_version,
             "representation": (
-                f"{shape['dino_pooled_dim']}D pooled global vector"
+                f"{shape['csd_style_dim']}D normalized style descriptor"
                 if shape is not None
-                else "pooled global vector"
+                else "normalized style descriptor"
             ),
-            "decision": "top-k style/global-visual MATCH guesses",
-        },
-        {
-            "stage": "Retrieval",
-            "signal": "DINO local detail",
-            "mode": RetrievalMode.DINO_PATCH_MAXSIM.value,
-            "modelId": config.models.dino_model_name,
-            "revision": config.models.dino_model_version,
-            "representation": (
-                f"{shape['dino_patch_grid_size']}x{shape['dino_patch_grid_size']} "
-                f"tokens x {shape['dino_patch_dim']}D, MaxSim late interaction"
-                if shape is not None
-                else "patch-token MaxSim late interaction"
-            ),
-            "decision": "top-k local-item/detail MATCH guesses",
+            "decision": "top-k artistic-style MATCH guesses",
         },
     ]
 
@@ -706,9 +671,7 @@ def _filter_stats(evidence: dict[str, dict]) -> dict:
         "artworkCount": len(evidence),
         "seedPromoted": sum(bool(item.get("seedPromoted")) for item in evidence.values()),
         "decisionCounts": decision_counts,
-        "classCounts": dict(
-            sorted(class_counts.items(), key=lambda item: (-item[1], item[0]))
-        ),
+        "classCounts": dict(sorted(class_counts.items(), key=lambda item: (-item[1], item[0]))),
         "meanFinalScore": _mean_available(evidence.values(), "finalScore"),
         "meanConfidence": _mean_available(evidence.values(), "confidence"),
         "meanArtUtility": _mean_available(evidence.values(), "artUtilityScore"),
@@ -717,29 +680,30 @@ def _filter_stats(evidence: dict[str, dict]) -> dict:
 
 
 def _funnel_stats(evaluation_payloads: Sequence[dict]) -> dict:
-    top_k_agreements = []
-    pooled_movements = []
+    clip_top_k_agreements = []
+    style_top_k_agreements = []
     clip_movements = []
+    style_movements = []
     shortlist_sizes = []
     candidate_counts = []
-    exact_order_matches = 0
     compared_queries = 0
     for entry in evaluation_payloads:
         modes = {mode["mode"]["value"]: mode for mode in entry.get("modes", [])}
         ensemble = modes.get(RetrievalMode.ENSEMBLE.value)
-        patch = modes.get(RetrievalMode.DINO_PATCH_MAXSIM.value)
-        if ensemble is None or patch is None:
+        clip = modes.get(RetrievalMode.CLIP_SUBJECT.value)
+        style = modes.get(RetrievalMode.CSD_STYLE.value)
+        if ensemble is None or clip is None or style is None:
             continue
         compared_queries += 1
         ensemble_ids = [item["artworkId"] for item in ensemble["results"]]
-        patch_ids = [item["artworkId"] for item in patch["results"]]
-        if patch_ids:
-            top_k_agreements.append(len(set(ensemble_ids) & set(patch_ids)) / len(patch_ids))
-        exact_order_matches += ensemble_ids == patch_ids
+        clip_ids = [item["artworkId"] for item in clip["results"]]
+        style_ids = [item["artworkId"] for item in style["results"]]
+        if clip_ids:
+            clip_top_k_agreements.append(len(set(ensemble_ids) & set(clip_ids)) / len(clip_ids))
+        if style_ids:
+            style_top_k_agreements.append(len(set(ensemble_ids) & set(style_ids)) / len(style_ids))
         first_retrieval = (
-            (ensemble["results"][0].get("retrieval") or {})
-            if ensemble["results"]
-            else {}
+            (ensemble["results"][0].get("retrieval") or {}) if ensemble["results"] else {}
         )
         if first_retrieval.get("shortlistSize") is not None:
             shortlist_sizes.append(int(first_retrieval["shortlistSize"]))
@@ -748,20 +712,20 @@ def _funnel_stats(evaluation_payloads: Sequence[dict]) -> dict:
         for final_rank, item in enumerate(ensemble["results"], start=1):
             retrieval = item.get("retrieval") or {}
             components = retrieval.get("components") or {}
-            pooled_rank = (components.get("pooled") or {}).get("rank")
             clip_rank = (components.get("clip") or {}).get("rank")
-            if pooled_rank is not None:
-                pooled_movements.append(abs(int(pooled_rank) - final_rank))
+            style_rank = (components.get("style") or {}).get("rank")
             if clip_rank is not None:
                 clip_movements.append(abs(int(clip_rank) - final_rank))
+            if style_rank is not None:
+                style_movements.append(abs(int(style_rank) - final_rank))
     mean_shortlist = _mean_numbers(shortlist_sizes)
     mean_candidates = _mean_numbers(candidate_counts)
     return {
         "queryCount": compared_queries,
-        "meanPatchTopKAgreement": _mean_numbers(top_k_agreements),
-        "exactPatchOrderMatches": exact_order_matches,
-        "meanPooledToFinalMovement": _mean_numbers(pooled_movements),
+        "meanClipTopKAgreement": _mean_numbers(clip_top_k_agreements),
+        "meanStyleTopKAgreement": _mean_numbers(style_top_k_agreements),
         "meanClipToFinalMovement": _mean_numbers(clip_movements),
+        "meanStyleToFinalMovement": _mean_numbers(style_movements),
         "meanShortlistSize": mean_shortlist,
         "meanCandidateCount": mean_candidates,
         "meanShortlistFraction": (

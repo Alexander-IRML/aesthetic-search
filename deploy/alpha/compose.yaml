@@ -1,0 +1,51 @@
+name: artsearch-alpha-control
+
+services:
+  airflow:
+    build:
+      context: ../..
+      dockerfile: orchestration/airflow/Dockerfile
+    command: standalone
+    user: "${AIRFLOW_UID:-50000}:0"
+    ports:
+      # Operator-only surface. Reach it through SSH or an authenticated tunnel.
+      - "127.0.0.1:${AIRFLOW_PORT:-8080}:8080"
+    environment:
+      AIRFLOW_HOME: /opt/airflow
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/artsearch/orchestration/airflow/dags
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+        ${AIRFLOW_DATABASE_URL:-sqlite:////opt/airflow/airflow.db}
+      AIRFLOW_CONN_SPARK_DEFAULT: spark://local
+      ARTSEARCH_PROJECT_ROOT: /opt/artsearch
+      ARTSEARCH_INTAKE_SCHEDULE: "${ARTSEARCH_INTAKE_SCHEDULE:-}"
+      ARTSEARCH_SPARK_AUDIT_SCHEDULE: "${ARTSEARCH_SPARK_AUDIT_SCHEDULE:-}"
+      ARTSEARCH_PRODUCTION_CONFIG: >-
+        ${ARTSEARCH_PRODUCTION_CONFIG:-configs/production.alpha-cloud.local.toml}
+      ARTSEARCH_ACTORS_FILE: >-
+        ${ARTSEARCH_ACTORS_FILE:-config/bluesky_actors.local.txt}
+      AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
+      AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-}"
+      AWS_SESSION_TOKEN: "${AWS_SESSION_TOKEN:-}"
+      AWS_DEFAULT_REGION: "${AWS_DEFAULT_REGION:-auto}"
+      QDRANT_URL: "${QDRANT_URL:-}"
+      QDRANT_API_KEY: "${QDRANT_API_KEY:-}"
+      DATABASE_URL: "${DATABASE_URL:-}"
+      DATABASE_DIRECT_URL: "${DATABASE_DIRECT_URL:-}"
+      MODAL_TOKEN_ID: "${MODAL_TOKEN_ID:-}"
+      MODAL_TOKEN_SECRET: "${MODAL_TOKEN_SECRET:-}"
+      HF_HOME: /opt/artsearch/data/cache/huggingface
+      TORCH_HOME: /opt/artsearch/data/cache/torch
+    volumes:
+      - artsearch-data:/opt/artsearch/data
+      - airflow-state:/opt/airflow
+      - ../../config:/opt/artsearch/config:ro
+      - ../../configs:/opt/artsearch/configs:ro
+    cpus: 3.0
+    mem_limit: 6g
+    restart: unless-stopped
+
+volumes:
+  artsearch-data:
+  airflow-state:

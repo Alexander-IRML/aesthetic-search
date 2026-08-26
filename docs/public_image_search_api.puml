@@ -1,0 +1,98 @@
+' Public image-query serving path implemented through 2026-08-26.
+@startuml ArtSearch_Public_Image_Search
+title ArtSearch Public Image Search
+
+left to right direction
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam linetype ortho
+skinparam componentStyle rectangle
+skinparam defaultFontName SansSerif
+
+actor "Alpha user" as User
+cloud "Cloudflare\nTLS / WAF / rate limit / CDN" as Edge #DCEEFF
+
+package "Hosted public application" #F8FAFC {
+  component "Upload-first web workbench\nHTML / CSS / JavaScript" as Frontend #E8F2FF
+  component "FastAPI coordinator\nvalidation / limits / response contract" as API #E8F7EE
+  component "Bounded query encoder\npinned CLIP + CSD" as Encoder #FFF4D6
+}
+
+database "Qdrant Cloud\nclip_subject + csd_style\nprefetch -> RRF -> top 100" as Qdrant #FDECEC
+database "PostgreSQL\ncatalog + ranked candidates\nimpressions + graded feedback" as Postgres #E8F7EE
+cloud "R2 custom domain\npublic display / thumbnail objects" as R2 #FFF8E7
+cloud "Hugging Face Hub\npinned startup artifacts" as HF #DCEEFF
+
+User --> Edge : HTTPS
+Edge --> Frontend : static application
+Frontend --> Edge : multipart image + opaque session key
+Frontend --> Edge : Great / Good / Bad result grade
+Edge --> API : POST /api/search-by-image
+Edge --> API : POST /api/result-feedback
+API --> Encoder : validated in-memory RGB
+Encoder --> HF : cache miss at startup only
+Encoder --> API : normalized 512D CLIP + 768D CSD
+API --> Qdrant : two named vectors + fixed policy filter
+Qdrant --> API : fused IDs + component evidence
+API --> Postgres : top-100 candidates + top-10 impressions
+API --> Frontend : stable top-10 JSON
+Frontend --> Edge : result image requests
+Edge --> R2 : CDN cache miss
+
+note bottom of API
+  The upload is discarded after inference.
+  No client-selected DB query, path, vector,
+  model ID, or result limit is accepted.
+end note
+
+note bottom of Encoder
+  A smaller encoder cannot replace these models
+  until trained into the same vector spaces and
+  validated on neighbor/ranking preservation.
+end note
+
+@enduml
+
+@startuml ArtSearch_Public_Image_Search_Sequence
+title Public Image Query Sequence
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+autonumber
+
+actor User
+participant "Browser workbench" as Browser
+participant "Cloudflare" as Edge
+participant "FastAPI" as API
+participant "CLIP + CSD owner" as Encoder
+database "Qdrant" as Qdrant
+database "PostgreSQL" as DB
+collections "R2 / CDN" as Assets
+
+User -> Browser : choose reference artwork
+Browser -> Edge : POST multipart image + session key
+Edge -> Edge : TLS, WAF, body and IP policy
+Edge -> API : trusted request
+API -> API : byte cap, MIME/decode check, EXIF RGB
+API -> DB : resolve session + start query
+API -> Encoder : one decoded image
+Encoder --> API : version-compatible CLIP + CSD vectors
+API -> Qdrant : named-vector prefetch + top-level RRF
+Qdrant --> API : ranked IDs and component ranks/scores
+API -> DB : enrich metadata
+API -> DB : stages + candidates + impressions + latency + versions
+API --> Edge : top-10 response
+Edge --> Browser : JSON
+Browser -> Assets : display/thumbnail URLs
+Browser --> User : stable result grid
+User -> Browser : Great / Good / Bad
+Browser -> Edge : feedback + query + result + session
+Edge -> API : validated same-origin JSON request
+API -> DB : append graded relevance event
+
+note over API,Encoder
+  Upload bytes and decoded pixels are not persisted.
+end note
+
+@enduml

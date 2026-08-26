@@ -218,9 +218,29 @@ __marimo__/
 .streamlit/secrets.toml
 
 # ArtSearch generated data
+node_modules/
+.wrangler/
+.dev.vars
+.dev.vars.*
+!**/.dev.vars.example
+.env.*
+!**/.env.example
+.netrc
+.npmrc
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+credentials.json
+service-account*.json
 config/artists.local.yaml
 config/bluesky_*.local.txt
+config/bluesky_*.local.csv
 configs/*.local.toml
+deploy/**/.env.local
+*.tfvars
+*.cpuprofile
 # Corpus-specific reports can contain source handles and local evaluation data.
 docs/retrieval_system_analysis_*.md
 # Treat the entire data tree as a private/generated boundary by default.
@@ -236,9 +256,19 @@ data/search_*.html
 data/artsearch.db
 data/*.db
 data/*.db-*
+*.sqlite
+*.sqlite3
+*.parquet
+*.npy
+*.npz
 
 # Local model artifacts
 models/artwork_filter/*
+*.joblib
+*.safetensors
+*.pt
+*.pth
+*.onnx
 
 # Local Airflow metadata, logs, and standalone credentials
 orchestration/airflow/state/*

@@ -292,8 +292,12 @@ def _app_config(tmp_path) -> AppConfig:
         models=ModelConfig(
             clip_model_name="clip",
             clip_model_version="v1",
-            dino_model_name="dino",
-            dino_model_version="v1",
+            csd_model_name="csd",
+            csd_model_version="v1",
+            csd_model_filename="model.pt",
+            csd_model_sha256="a" * 64,
+            csd_processor_name="clip-processor",
+            csd_processor_version="v1",
         ),
         embeddings=EmbeddingConfig(batch_size=2, device="cpu"),
         retrieval=RetrievalConfig(

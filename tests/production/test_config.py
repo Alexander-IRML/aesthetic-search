@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from artsearch.production.config import (
     ObjectStoreConfig,
+    PostgresConfig,
     QdrantConfig,
     load_production_config,
 )
@@ -52,8 +53,8 @@ def test_qdrant_config_validates_serving_funnel() -> None:
         QdrantConfig(collection_name="same", alias_name="same")
     with pytest.raises(ValidationError, match="fusion_limit"):
         QdrantConfig(prefetch_limit=10, fusion_limit=11)
-    with pytest.raises(ValidationError, match="patch_rerank_limit"):
-        QdrantConfig(prefetch_limit=10, fusion_limit=10, patch_rerank_limit=11)
+    with pytest.raises(ValidationError, match="distinct names"):
+        QdrantConfig(clip_vector_name="same", csd_vector_name="same")
 
 
 def test_s3_config_requires_bucket_and_https() -> None:
@@ -65,3 +66,21 @@ def test_s3_config_requires_bucket_and_https() -> None:
             bucket="bucket",
             endpoint_url="http://insecure.example",
         )
+    with pytest.raises(ValidationError, match="upload_concurrency"):
+        ObjectStoreConfig(upload_concurrency=0)
+
+
+def test_alpha_cloud_config_uses_bounded_parallel_object_publication() -> None:
+    root = Path(__file__).resolve().parents[2]
+    config = load_production_config(root / "configs/production.alpha-cloud.example.toml")
+
+    assert config.object_store.upload_concurrency == 16
+    assert config.object_store.upload_checkpoint_batch_size == 256
+    assert config.object_store.upload_max_attempts == 5
+
+
+def test_postgres_config_separates_runtime_and_migration_urls() -> None:
+    with pytest.raises(ValidationError, match="must differ"):
+        PostgresConfig(database_url_env="DATABASE_URL", direct_url_env="DATABASE_URL")
+    with pytest.raises(ValidationError, match="pool_size"):
+        PostgresConfig(pool_size=0)

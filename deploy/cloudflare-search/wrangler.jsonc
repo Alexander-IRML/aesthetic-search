@@ -1,0 +1,73 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "artsearch-alpha-search",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-21",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "keep_vars": true,
+  "upload_source_maps": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "secrets": {
+    "required": [
+      "ALPHA_ACCESS_CODE",
+      "ALPHA_SESSION_KEY",
+      "DATABASE_URL",
+      "QDRANT_API_KEY",
+      "QDRANT_URL"
+    ]
+  },
+  "vars": {
+    "ARTSEARCH_MEDIA_PREFIX": "artsearch/corpus/"
+  },
+  "r2_buckets": [
+    {
+      "binding": "ARTSEARCH_MEDIA",
+      "bucket_name": "artsearch-artifacts-alpha"
+    }
+  ],
+  "containers": [
+    {
+      "name": "artsearch-alpha-search-api",
+      "class_name": "ArtSearchApiContainer",
+      "image": "../../Dockerfile",
+      "image_build_context": "../..",
+      "max_instances": 1,
+      "instance_type": {
+        "vcpu": 1,
+        "memory_mib": 4096,
+        "disk_mb": 8000
+      },
+      "constraints": {
+        "regions": ["WNAM"]
+      },
+      "ssh": {
+        "enabled": false
+      }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ARTSEARCH_API_CONTAINER",
+        "class_name": "ArtSearchApiContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ArtSearchApiContainer"]
+    }
+  ],
+  "dev": {
+    "ip": "127.0.0.1",
+    "port": 8787,
+    "local_protocol": "http",
+    "enable_containers": true,
+    "generate_types": true
+  }
+}

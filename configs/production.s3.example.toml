@@ -9,6 +9,10 @@ bucket = "YOUR_BUCKET"
 prefix = "artsearch"
 endpoint_url = "https://s3.YOUR_REGION.backblazeb2.com"
 region = "YOUR_REGION"
+upload_concurrency = 16
+upload_checkpoint_batch_size = 256
+upload_max_attempts = 5
+upload_retry_base_seconds = 0.5
 
 [manifests]
 local_dir = "data/production/manifests"

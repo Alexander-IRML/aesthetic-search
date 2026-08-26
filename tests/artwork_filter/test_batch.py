@@ -3,7 +3,7 @@ import json
 
 from PIL import Image
 
-from artsearch.artwork_filter.batch import classify_candidate_jsonl
+from artsearch.artwork_filter.batch import classify_candidate_jsonl, completed_candidate_keys
 from artsearch.artwork_filter.config import load_artwork_filter_config
 from artsearch.artwork_filter.persistence import JSONLDecisionStore
 from artsearch.artwork_filter.schemas import ImageCandidate
@@ -81,3 +81,33 @@ def test_resume_reclassifies_same_candidate_when_bluesky_post_cid_changes(tmp_pa
     assert changed["processed"] == 1
     assert unchanged["processed"] == 0
     assert unchanged["skipped"] == 1
+
+
+def test_resume_skips_deterministic_force_reject_without_visual_scores(tmp_path):
+    output_path = tmp_path / "decisions.jsonl"
+    output_path.write_text(
+        json.dumps(
+            {
+                "candidate_id": "tiny-image",
+                "source_cid": "cid-one",
+                "decision": "reject",
+                "config_hash": "config-hash",
+                "model_version": "model-id",
+                "prompt_version": "prompt-v1",
+                "visual_scores": None,
+                "rule_result": {"disposition": "force_reject"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    completed = completed_candidate_keys(
+        output_path,
+        config_hash="config-hash",
+        model_id="model-id",
+        model_revision="pinned-revision",
+        prompt_version="prompt-v1",
+    )
+
+    assert completed == {("tiny-image", "cid-one")}

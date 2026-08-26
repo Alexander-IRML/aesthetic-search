@@ -1,9 +1,9 @@
-version = "1.0.0"
+version = "1.2.0"
 mode = "zero_shot"
 
 [model]
 model_id = "google/siglip2-base-patch16-224"
-revision = ""
+revision = "75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2"
 device = "auto"
 dtype = "auto"
 batch_size = 32
@@ -19,7 +19,8 @@ max_retries = 2
 prefer_thumbnail = true
 allow_fullsize_fallback = true
 user_agent = "ArtSearchResearch/0.1"
-max_concurrency = 8
+max_concurrency = 16
+fullsize_max_concurrency = 24
 max_redirects = 5
 allowed_bluesky_image_hosts = ["cdn.bsky.app"]
 
@@ -36,7 +37,9 @@ low_variance_threshold = 2.0
 max_pixels = 100000000
 
 [policy]
-automatic_accept_enabled = false
+automatic_accept_enabled = true
+trust_source_moderation_for_sfw = true
+source_safe_accepts_demo_eligible = true
 accept_finished_illustration = true
 accept_traditional_art = true
 accept_comic = true

@@ -32,8 +32,12 @@ def _config(tmp_path):
         models=ModelConfig(
             clip_model_name="clip-model",
             clip_model_version="v1",
-            dino_model_name="dino-model",
-            dino_model_version="v1",
+            csd_model_name="csd-model",
+            csd_model_version="v1",
+            csd_model_filename="model.pt",
+            csd_model_sha256="a" * 64,
+            csd_processor_name="clip-processor",
+            csd_processor_version="v1",
         ),
         embeddings=EmbeddingConfig(batch_size=2, device="cpu"),
         retrieval=RetrievalConfig(
@@ -174,9 +178,7 @@ def test_standardize_corpus_logs_image_failure_and_continues(tmp_path, monkeypat
     monkeypatch.setattr(
         pipeline,
         "standardize_image",
-        lambda raw, processed, image_config: (_ for _ in ()).throw(
-            RuntimeError("save failed")
-        ),
+        lambda raw, processed, image_config: (_ for _ in ()).throw(RuntimeError("save failed")),
     )
 
     result = pipeline.standardize_corpus("unused-config.yaml", "unused-artists.yaml")

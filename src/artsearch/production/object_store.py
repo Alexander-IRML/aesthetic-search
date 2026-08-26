@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+import mimetypes
 import os
 from pathlib import Path, PurePosixPath
+import secrets
 from typing import Any, Protocol
 import uuid
 
@@ -29,6 +32,19 @@ class ObjectRef:
     created: bool = True
 
     def to_dict(self) -> dict[str, str | int | bool | None]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ObjectStoreCanaryResult:
+    key: str
+    size: int
+    sha256: str
+    write_verified: bool
+    read_verified: bool
+    delete_verified: bool
+
+    def to_dict(self) -> dict[str, str | int | bool]:
         return asdict(self)
 
 
@@ -182,27 +198,41 @@ class S3ObjectStore:
         expected_sha256: str | None = None,
     ) -> ObjectRef:
         source_path = Path(source)
-        digest, size = file_identity(source_path)
+        digest, md5_hex, md5_base64, size = _file_upload_identity(source_path)
         _check_expected_hash(digest, expected_sha256)
         safe_key = normalize_object_key(key)
         remote_path = self._remote_path(safe_key)
         filesystem = self._fs()
 
         if filesystem.exists(remote_path):
-            info = filesystem.info(remote_path)
+            info = _remote_head(filesystem, remote_path)
             remote_size = _remote_size(info)
             if remote_size != size:
                 raise ObjectCollisionError(f"object key already has another size: {safe_key}")
-            remote_digest, verified_size = _remote_identity(filesystem, remote_path)
-            if remote_digest != digest or verified_size != size:
+            if not _remote_checksum_matches(info, sha256=digest, md5_hex=md5_hex):
+                remote_digest, verified_size = _remote_identity(filesystem, remote_path)
+                matches = remote_digest == digest and verified_size == size
+            else:
+                matches = True
+            if not matches:
                 raise ObjectCollisionError(
                     f"object key already contains different bytes: {safe_key}"
                 )
             return self._ref(safe_key, size, digest, info=info, created=False)
 
         try:
-            filesystem.put_file(str(source_path), remote_path)
-            info = filesystem.info(remote_path)
+            filesystem.put_file(
+                str(source_path),
+                remote_path,
+                s3_additional_kwargs={
+                    "CacheControl": "public, max-age=31536000, immutable",
+                    "ContentMD5": md5_base64,
+                    "ContentType": mimetypes.guess_type(source_path.name)[0]
+                    or "application/octet-stream",
+                    "Metadata": {"sha256": digest},
+                },
+            )
+            info = _remote_head(filesystem, remote_path)
         except Exception as exc:
             raise ObjectStoreError(f"could not upload s3://{remote_path}: {exc}") from exc
         if _remote_size(info) != size:
@@ -211,8 +241,12 @@ class S3ObjectStore:
             except Exception:
                 pass
             raise ObjectStoreError(f"uploaded object size verification failed: {safe_key}")
-        remote_digest, verified_size = _remote_identity(filesystem, remote_path)
-        if remote_digest != digest or verified_size != size:
+        if not _remote_checksum_matches(info, sha256=digest, md5_hex=md5_hex):
+            remote_digest, verified_size = _remote_identity(filesystem, remote_path)
+            matches = remote_digest == digest and verified_size == size
+        else:
+            matches = True
+        if not matches:
             try:
                 filesystem.rm(remote_path)
             except Exception:
@@ -313,6 +347,58 @@ def build_object_store(config: ObjectStoreConfig) -> ObjectStore:
     return S3ObjectStore(config)
 
 
+def verify_object_store(
+    store: ObjectStore,
+    temporary_dir: str | Path,
+    *,
+    namespace: str = "canaries/intake",
+) -> ObjectStoreCanaryResult:
+    """Prove write/read/delete access before a costly intake run begins."""
+
+    root = Path(temporary_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    token = uuid.uuid4().hex
+    source = root / f"object-store-canary-{token}.bin"
+    destination = root / f"object-store-canary-{token}.download"
+    payload = secrets.token_bytes(128)
+    source.write_bytes(payload)
+    digest, size = file_identity(source)
+    key = content_addressed_key(namespace, digest, suffix=f"-{token}.bin")
+    uploaded = False
+    deleted = False
+    try:
+        stored = store.put_file(source, key, expected_sha256=digest)
+        uploaded = True
+        fetched = store.get_file(key, destination)
+        fetched_digest, fetched_size = file_identity(destination)
+        if (
+            stored.sha256 != digest
+            or fetched.sha256 != digest
+            or fetched_digest != digest
+            or fetched_size != size
+        ):
+            raise ObjectStoreError("object-store canary integrity verification failed")
+        deleted = store.delete(key)
+        if not deleted or store.exists(key):
+            raise ObjectStoreError("object-store canary delete verification failed")
+        return ObjectStoreCanaryResult(
+            key=key,
+            size=size,
+            sha256=digest,
+            write_verified=True,
+            read_verified=True,
+            delete_verified=True,
+        )
+    finally:
+        source.unlink(missing_ok=True)
+        destination.unlink(missing_ok=True)
+        if uploaded and not deleted:
+            try:
+                store.delete(key)
+            except RuntimeError:
+                pass
+
+
 def content_addressed_key(namespace: str, sha256: str, *, suffix: str = "") -> str:
     if len(sha256) != 64 or any(character not in "0123456789abcdef" for character in sha256):
         raise ValueError("sha256 must be a lowercase hexadecimal digest")
@@ -350,16 +436,67 @@ def file_identity(path: str | Path) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
+def _file_upload_identity(path: Path) -> tuple[str, str, str, int]:
+    sha256 = hashlib.sha256()
+    md5 = hashlib.md5(usedforsecurity=False)
+    size = 0
+    try:
+        with path.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                sha256.update(chunk)
+                md5.update(chunk)
+                size += len(chunk)
+    except OSError as exc:
+        raise ObjectStoreError(f"could not read object source {path}: {exc}") from exc
+    return (
+        sha256.hexdigest(),
+        md5.hexdigest(),
+        base64.b64encode(md5.digest()).decode("ascii"),
+        size,
+    )
+
+
 def _check_expected_hash(actual: str, expected: str | None) -> None:
     if expected is not None and actual != expected:
         raise ObjectStoreError(f"source SHA-256 mismatch: expected {expected}, got {actual}")
 
 
 def _remote_size(info: dict[str, Any]) -> int:
-    value = info.get("size", info.get("Size"))
+    value = info.get("size", info.get("Size", info.get("ContentLength")))
     if value is None:
         raise ObjectStoreError("S3 object metadata did not include a size")
     return int(value)
+
+
+def _remote_head(filesystem: Any, path: str) -> dict[str, Any]:
+    call_s3 = getattr(filesystem, "call_s3", None)
+    if call_s3 is None:
+        return dict(filesystem.info(path))
+    bucket, separator, key = path.partition("/")
+    if not separator or not bucket or not key:
+        raise ObjectStoreError(f"invalid S3 object path: {path}")
+    try:
+        return dict(call_s3("head_object", Bucket=bucket, Key=key))
+    except Exception as exc:
+        raise ObjectStoreError(f"could not inspect s3://{path}: {exc}") from exc
+
+
+def _remote_checksum_matches(
+    info: dict[str, Any],
+    *,
+    sha256: str,
+    md5_hex: str,
+) -> bool:
+    metadata = info.get("Metadata", info.get("metadata", {}))
+    if isinstance(metadata, dict):
+        remote_sha256 = metadata.get("sha256") or metadata.get("Sha256")
+        if isinstance(remote_sha256, str) and remote_sha256.casefold() == sha256:
+            return True
+    etag = info.get("ETag") or info.get("etag")
+    if etag is None:
+        return False
+    normalized_etag = str(etag).strip('"').casefold()
+    return "-" not in normalized_etag and normalized_etag == md5_hex
 
 
 def _remote_identity(filesystem: Any, path: str) -> tuple[str, int]:

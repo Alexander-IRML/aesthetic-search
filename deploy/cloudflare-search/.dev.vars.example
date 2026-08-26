@@ -1,0 +1,5 @@
+ALPHA_ACCESS_CODE=replace-with-a-long-random-code
+ALPHA_SESSION_KEY=replace-with-a-separate-random-signing-key
+QDRANT_URL=https://replace-me.cloud.qdrant.io
+QDRANT_API_KEY=replace-me
+DATABASE_URL=postgresql://replace-me

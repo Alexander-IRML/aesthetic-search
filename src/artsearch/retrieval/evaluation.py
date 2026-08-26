@@ -5,6 +5,7 @@ from collections.abc import Iterable, Sequence
 from datetime import datetime, timezone
 import json
 from math import log2
+import os
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -31,6 +32,11 @@ class RetrievalJudgment(BaseModel):
     rank: int = Field(gt=0)
     result_count: int = Field(gt=0)
     score: float
+    fusion_score: float | None = None
+    fusion_rank: int | None = Field(default=None, gt=0)
+    style_score: float | None = None
+    style_rank: int | None = Field(default=None, gt=0)
+    # Legacy evidence remains parseable for existing append-only judgments.
     pooled_score: float | None = None
     pooled_rank: int | None = Field(default=None, gt=0)
     patch_score: float | None = None
@@ -48,7 +54,14 @@ class RetrievalJudgment(BaseModel):
     note: str = ""
     labeled_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-    @field_validator("score", "pooled_score", "patch_score", "clip_score")
+    @field_validator(
+        "score",
+        "fusion_score",
+        "style_score",
+        "pooled_score",
+        "patch_score",
+        "clip_score",
+    )
     @classmethod
     def _finite_score(cls, value: float | None) -> float | None:
         if value is None:
@@ -61,6 +74,26 @@ class RetrievalJudgment(BaseModel):
     @classmethod
     def _trim_text(cls, value: object) -> str:
         return "" if value is None else str(value).strip()
+
+
+class JSONLRetrievalJudgmentStore:
+    """Append immutable relevance events to a durable local audit stream."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+
+    def append(self, judgment: RetrievalJudgment) -> None:
+        self.append_many([judgment])
+
+    def append_many(self, judgments: Sequence[RetrievalJudgment]) -> None:
+        if not judgments:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as handle:
+            for judgment in judgments:
+                handle.write(judgment.model_dump_json() + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
 
 
 def load_retrieval_judgments(path: str | Path) -> list[RetrievalJudgment]:
@@ -159,15 +192,11 @@ def _mode_metrics(judgments: Sequence[RetrievalJudgment]) -> dict[str, object]:
     relevant = sum(item.relevant for item in judgments)
     nonrelevant = len(judgments) - relevant
     expected = sum(
-        max(item.result_count for item in query_judgments)
-        for query_judgments in by_query.values()
+        max(item.result_count for item in query_judgments) for query_judgments in by_query.values()
     )
     positive_scores = [item.score for item in judgments if item.relevant]
     negative_scores = [item.score for item in judgments if not item.relevant]
-    prefix_metrics = {
-        str(k): _prefix_metrics(by_query, k)
-        for k in (1, 5, 10)
-    }
+    prefix_metrics = {str(k): _prefix_metrics(by_query, k) for k in (1, 5, 10)}
     reciprocal_ranks = [_reciprocal_rank(items) for items in by_query.values()]
     average_precisions = [_average_precision(items) for items in by_query.values()]
     ndcgs = [_ndcg(items) for items in by_query.values()]
@@ -199,10 +228,7 @@ def _prefix_metrics(
     k: int,
 ) -> dict[str, float | int | None]:
     prefix = [
-        item
-        for query_judgments in by_query.values()
-        for item in query_judgments
-        if item.rank <= k
+        item for query_judgments in by_query.values() for item in query_judgments if item.rank <= k
     ]
     relevant = sum(item.relevant for item in prefix)
     expected = sum(

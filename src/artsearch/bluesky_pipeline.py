@@ -19,6 +19,11 @@ class PipelineSummary:
     actors_completed: int = 0
     actors_skipped: int = 0
     actor_errors: int = 0
+    actors_backlogged: int = 0
+    actors_quota_reached: int = 0
+    source_state_updates: int = 0
+    candidate_target: int = 0
+    budget_reached: int = 0
     candidates: int = 0
     skipped: int = 0
     accepted: int = 0

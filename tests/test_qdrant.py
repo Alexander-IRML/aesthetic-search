@@ -54,7 +54,7 @@ def test_collection_schema_alias_and_environment_credentials(
     vectors = collection.config.params.vectors
     assert isinstance(vectors, dict)
     assert vectors[config.clip_vector_name].size == 2
-    assert vectors[config.dino_vector_name].size == 2
+    assert vectors[config.csd_vector_name].size == 2
 
     secret_config = config.model_copy(update={"require_api_key": True})
     monkeypatch.delenv(secret_config.api_key_env, raising=False)
@@ -76,7 +76,7 @@ def test_collection_schema_mismatch_is_not_silently_reused(tmp_path: Path) -> No
                 distance=qmodels.Distance.COSINE,
                 datatype=qmodels.Datatype.FLOAT32,
             ),
-            config.dino_vector_name: qmodels.VectorParams(
+            config.csd_vector_name: qmodels.VectorParams(
                 size=2,
                 distance=qmodels.Distance.COSINE,
                 datatype=qmodels.Datatype.FLOAT32,
@@ -182,7 +182,7 @@ def test_sync_repairs_remote_count_drift_and_deletes_untracked_points(tmp_path: 
                     id=point_id_for_artwork("untracked"),
                     vector={
                         config.clip_vector_name: [0.0, 1.0],
-                        config.dino_vector_name: [0.0, 1.0],
+                        config.csd_vector_name: [0.0, 1.0],
                     },
                     payload={
                         "artwork_id": "untracked",
@@ -201,15 +201,12 @@ def test_sync_repairs_remote_count_drift_and_deletes_untracked_points(tmp_path: 
         assert repaired.remote_count == 1
 
 
-def test_search_fuses_clip_and_dino_then_reranks_patches_and_limits_artists(
+def test_search_fuses_clip_and_csd_and_limits_artists(
     tmp_path: Path,
 ) -> None:
     app = _app_config(tmp_path)
-    config = _qdrant_config().model_copy(
-        update={"max_results_per_artist": 1, "patch_rerank_limit": 10}
-    )
+    config = _qdrant_config().model_copy(update={"max_results_per_artist": 1})
     client = QdrantClient(":memory:")
-    query_patches = _patches([1, 0])
     with connect(app.database_path) as connection:
         init_db(connection)
         _add_artwork(
@@ -219,7 +216,6 @@ def test_search_fuses_clip_and_dino_then_reranks_patches_and_limits_artists(
             "query-artist",
             [1, 0],
             [1, 0],
-            patches=query_patches,
         )
         _add_artwork(
             connection,
@@ -228,16 +224,14 @@ def test_search_fuses_clip_and_dino_then_reranks_patches_and_limits_artists(
             "artist-a",
             [1, 0],
             [1, 0],
-            patches=_patches([0, 1]),
         )
         _add_artwork(
             connection,
             app,
-            "patch-winner",
+            "style-winner",
             "artist-b",
             [0.8, 0.2],
-            [0.8, 0.2],
-            patches=query_patches,
+            [1, 0],
         )
         _add_artwork(
             connection,
@@ -246,31 +240,31 @@ def test_search_fuses_clip_and_dino_then_reranks_patches_and_limits_artists(
             "artist-b",
             [0.7, 0.3],
             [0.7, 0.3],
-            patches=query_patches,
         )
         sync_qdrant_from_sqlite(connection, app, config, client)
 
         service = QdrantSearchService(client, config)
-        global_hits = service.search_by_artwork(
-            connection,
-            app,
-            "query",
-            top_k=3,
-            use_patch_rerank=False,
-        )
-        reranked = service.search_by_artwork(connection, app, "query", top_k=3)
+        hits = service.search_by_artwork(connection, app, "query", top_k=3)
 
-        assert global_hits[0].artwork_id == "global-winner"
-        assert global_hits[0].clip_rank == 1
-        assert global_hits[0].dino_rank == 1
-        assert reranked[0].artwork_id == "patch-winner"
-        assert reranked[0].patch_rank == 1
-        assert len([hit for hit in reranked if hit.artist_id == "artist-b"]) == 1
-        assert all(hit.fusion_score is not None for hit in reranked)
+        assert hits[0].artwork_id == "global-winner"
+        assert hits[0].clip_rank == 1
+        assert hits[0].style_score == pytest.approx(1.0)
+        assert hits[0].style_rank in {1, 2}
+        assert len([hit for hit in hits if hit.artist_id == "artist-b"]) == 1
+        assert all(hit.fusion_score is not None for hit in hits)
 
         clip_hits = service.search_by_clip_vector(np.array([1.0, 0.0]), top_k=3)
         assert clip_hits[0].artwork_id in {"query", "global-winner"}
         assert all(hit.clip_score is not None for hit in clip_hits)
+
+        upload_hits = service.search_by_vectors(
+            np.array([1.0, 0.0]),
+            np.array([1.0, 0.0]),
+            top_k=3,
+        )
+        assert upload_hits[0].artwork_id in {"query", "global-winner"}
+        assert all(hit.clip_score is not None for hit in upload_hits)
+        assert all(hit.style_score is not None for hit in upload_hits)
 
         evaluation = evaluate_qdrant_ann(
             connection,
@@ -284,9 +278,46 @@ def test_search_fuses_clip_and_dino_then_reranks_patches_and_limits_artists(
         assert evaluation.sampled_queries == 3
         assert {metric.vector_name for metric in evaluation.metrics} == {
             config.clip_vector_name,
-            config.dino_vector_name,
+            config.csd_vector_name,
         }
         assert all(metric.mean_recall == 1.0 for metric in evaluation.metrics)
+
+
+def test_ann_evaluation_targets_physical_collection_before_alias_promotion(
+    tmp_path: Path,
+) -> None:
+    app = _app_config(tmp_path)
+    target = _qdrant_config().model_copy(
+        update={
+            "collection_name": "artworks_test_v2",
+            "promote_after_sync": False,
+        }
+    )
+    decoy = target.model_copy(update={"collection_name": "artworks_test_v1"})
+    client = QdrantClient(":memory:")
+
+    with connect(app.database_path) as connection:
+        init_db(connection)
+        _add_artwork(connection, app, "one", "artist-a", [1, 0], [1, 0])
+        _add_artwork(connection, app, "two", "artist-b", [0, 1], [0, 1])
+        _add_artwork(connection, app, "three", "artist-c", [0.7, 0.7], [0.7, 0.7])
+        sync_qdrant_from_sqlite(connection, app, target, client)
+
+        ensure_qdrant_collection(client, decoy, app.models)
+        promote_qdrant_alias(client, decoy)
+        assert client.get_aliases().aliases[0].collection_name == decoy.collection_name
+
+        evaluation = evaluate_qdrant_ann(
+            connection,
+            app,
+            target,
+            client,
+            sample_size=3,
+            top_k=2,
+            seed=17,
+        )
+
+    assert all(metric.mean_recall == 1.0 for metric in evaluation.metrics)
 
 
 def _app_config(tmp_path: Path) -> AppConfig:
@@ -307,8 +338,12 @@ def _app_config(tmp_path: Path) -> AppConfig:
         models=ModelConfig(
             clip_model_name="test/clip",
             clip_model_version="clip-v1",
-            dino_model_name="test/dino",
-            dino_model_version="dino-v1",
+            csd_model_name="test/csd",
+            csd_model_version="csd-v1",
+            csd_model_filename="model.pt",
+            csd_model_sha256="a" * 64,
+            csd_processor_name="test/clip-processor",
+            csd_processor_version="processor-v1",
         ),
         embeddings=EmbeddingConfig(batch_size=4, device="cpu"),
         retrieval=RetrievalConfig(
@@ -316,7 +351,6 @@ def _app_config(tmp_path: Path) -> AppConfig:
             demo_output_path=tmp_path / "data/demo.html",
             gallery_output_path=tmp_path / "data/gallery.html",
             shortlist_size=10,
-            patch_match_top_n=1,
             review_session_count=1,
         ),
     )
@@ -329,12 +363,11 @@ def _qdrant_config() -> QdrantConfig:
         collection_name="artworks_test_v1",
         alias_name="artworks_test_active",
         clip_dimension=2,
-        dino_dimension=2,
+        csd_dimension=2,
         datatype="float32",
         batch_size=2,
         prefetch_limit=10,
         fusion_limit=10,
-        patch_rerank_limit=10,
         max_results_per_artist=2,
         require_sfw=True,
         require_bluesky_accept=True,
@@ -347,9 +380,8 @@ def _add_artwork(
     artwork_id: str,
     artist_id: str,
     clip: list[float],
-    dino: list[float],
+    csd: list[float],
     *,
-    patches: np.ndarray | None = None,
     is_sfw: bool | None = True,
     source_platform: str = "manual",
     decision: str | None = None,
@@ -385,9 +417,7 @@ def _add_artwork(
         artwork_id,
         ImageEmbeddings(
             clip_vector=np.asarray(clip, dtype=np.float32),
-            dino_pooled=np.asarray(dino, dtype=np.float32),
-            dino_patches=patches if patches is not None else _patches([1, 0]),
-            dino_patch_grid_size=2,
+            csd_style=np.asarray(csd, dtype=np.float32),
         ),
         app.models,
     )
@@ -400,16 +430,14 @@ def _replace_embedding(
     app: AppConfig,
     artwork_id: str,
     clip: list[float],
-    dino: list[float],
+    csd: list[float],
 ) -> None:
     upsert_embedding(
         connection,
         artwork_id,
         ImageEmbeddings(
             clip_vector=np.asarray(clip, dtype=np.float32),
-            dino_pooled=np.asarray(dino, dtype=np.float32),
-            dino_patches=_patches([1, 0]),
-            dino_patch_grid_size=2,
+            csd_style=np.asarray(csd, dtype=np.float32),
         ),
         app.models,
     )
@@ -457,7 +485,3 @@ def _add_decision(
         ),
     )
     connection.commit()
-
-
-def _patches(vector: list[float]) -> np.ndarray:
-    return np.tile(np.asarray([vector], dtype=np.float32), (4, 1))

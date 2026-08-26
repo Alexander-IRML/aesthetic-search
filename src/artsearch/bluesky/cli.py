@@ -23,6 +23,7 @@ from artsearch.bluesky.io import (
     JSONLCandidateStore,
     actor_checkpoint_key,
 )
+from artsearch.bluesky.roster import read_actor_roster
 
 
 @dataclass
@@ -50,7 +51,7 @@ def main() -> None:
 
     collect_authors = subparsers.add_parser(
         "collect-authors",
-        help="Collect image candidates from a newline-delimited local actor list.",
+        help="Collect image candidates from a local text or CSV actor roster.",
     )
     _add_collection_args(collect_authors)
     collect_authors.add_argument("--actors-file", required=True)
@@ -106,6 +107,11 @@ def _add_collection_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-pages", type=int)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--feed-filter")
+    parser.add_argument(
+        "--max-candidates-per-actor",
+        type=_positive_int,
+        help="Stop after this many source-image candidates from each actor.",
+    )
     parser.add_argument("--append", action="store_true")
     parser.add_argument(
         "--resume",
@@ -118,7 +124,7 @@ def _add_collection_args(parser: argparse.ArgumentParser) -> None:
 
 async def _audit_actor_file(args: argparse.Namespace) -> dict[str, int | str]:
     config = load_bluesky_config(args.config)
-    actors = _read_actor_file(args.actors_file)
+    actors = read_actor_roster(args.actors_file)
     if args.max_actors is not None:
         if args.max_actors <= 0:
             raise ValueError("--max-actors must be positive")
@@ -158,7 +164,7 @@ async def _collect(args: argparse.Namespace) -> CollectionSummary:
         Path(args.checkpoint) if args.checkpoint else config.storage.checkpoint_jsonl_path
     )
     actors = (
-        [args.actor] if args.command == "collect-author" else _read_actor_file(args.actors_file)
+        [args.actor] if args.command == "collect-author" else read_actor_roster(args.actors_file)
     )
     if not actors:
         raise ValueError("actor list is empty")
@@ -206,6 +212,7 @@ async def _collect_actors(
                     max_pages=args.max_pages,
                     limit=args.limit,
                     feed_filter=args.feed_filter,
+                    max_candidates=getattr(args, "max_candidates_per_actor", None),
                     moderation=config.moderation,
                 ):
                     batch.append(candidate)
@@ -240,20 +247,19 @@ async def _collect_actors(
     return summary
 
 
-def _read_actor_file(path: str | Path) -> list[str]:
-    actors = []
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
-        actor = line.strip()
-        if actor and not actor.startswith("#"):
-            actors.append(actor)
-    return actors
-
-
 def _collection_settings(config: BlueskyConfig, args: argparse.Namespace) -> dict[str, object]:
     return {
         "base_url": config.api.base_url,
         "max_pages": args.max_pages if args.max_pages is not None else config.api.max_pages,
         "limit": args.limit if args.limit is not None else config.api.page_limit,
         "feed_filter": args.feed_filter or config.api.feed_filter,
+        "max_candidates_per_actor": getattr(args, "max_candidates_per_actor", None),
         "moderation": config.moderation.model_dump(mode="json"),
     }
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be positive")
+    return parsed

@@ -1,0 +1,211 @@
+name: artsearch-local
+
+x-app-user: &app-user "${ARTSEARCH_UID:-1000}:${ARTSEARCH_GID:-1000}"
+
+x-app-environment: &app-environment
+  ARTSEARCH_PROJECT_ROOT: /opt/artsearch
+  DATABASE_URL: >-
+    postgresql://artsearch:${ARTSEARCH_POSTGRES_PASSWORD:-artsearch-local-only}@postgres:5432/artsearch
+  DATABASE_DIRECT_URL: >-
+    postgresql://artsearch:${ARTSEARCH_POSTGRES_PASSWORD:-artsearch-local-only}@postgres:5432/artsearch
+  QDRANT_URL: http://qdrant:6333
+  QDRANT_API_KEY: ""
+  HF_HOME: /opt/artsearch/data/cache/huggingface
+  TORCH_HOME: /opt/artsearch/data/cache/torch
+
+x-app-volumes: &app-volumes
+  - ./data:/opt/artsearch/data
+  - ./config:/opt/artsearch/config:ro
+  - ./configs:/opt/artsearch/configs:ro
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.6-pg17-bookworm
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+    environment:
+      POSTGRES_DB: artsearch
+      POSTGRES_USER: artsearch
+      POSTGRES_PASSWORD: ${ARTSEARCH_POSTGRES_PASSWORD:-artsearch-local-only}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U artsearch -d artsearch"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.18.2
+    ports:
+      - "127.0.0.1:${ARTSEARCH_QDRANT_HTTP_PORT:-6335}:6333"
+      - "127.0.0.1:${ARTSEARCH_QDRANT_GRPC_PORT:-6336}:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    restart: unless-stopped
+
+  migrate:
+    image: artsearch-control:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    command:
+      - artsearch-postgres
+      - --config
+      - configs/production.docker.toml
+      - upgrade
+    user: *app-user
+    environment: *app-environment
+    volumes: *app-volumes
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  dashboard:
+    image: artsearch-control:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    command:
+      - artsearch-model-dashboard
+      - --production-config
+      - configs/production.docker.toml
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8765"
+      - --allow-remote
+      - --allow-remote-review
+      - --no-open
+    user: *app-user
+    environment: *app-environment
+    ports:
+      - "127.0.0.1:${ARTSEARCH_DASHBOARD_PORT:-8765}:8765"
+    volumes: *app-volumes
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8765/', timeout=2).read(1)
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    profiles: ["search"]
+    image: artsearch-ml:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ml
+    command:
+      - artsearch-api
+      - --app-config
+      - config/config.yaml
+      - --production-config
+      - configs/production.docker.toml
+      - --api-config
+      - configs/search_api.default.toml
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    user: *app-user
+    environment: *app-environment
+    ports:
+      - "127.0.0.1:${ARTSEARCH_API_PORT:-8000}:8000"
+    volumes: *app-volumes
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=2).read(1)
+      start_period: 10m
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  airflow:
+    image: artsearch-airflow:local
+    build:
+      context: .
+      dockerfile: orchestration/airflow/Dockerfile
+    command: standalone
+    user: "${AIRFLOW_UID:-50000}:0"
+    environment:
+      <<: *app-environment
+      AIRFLOW_HOME: /opt/airflow
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/artsearch/orchestration/airflow/dags
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+        postgresql+psycopg://artsearch:${ARTSEARCH_POSTGRES_PASSWORD:-artsearch-local-only}@postgres:5432/airflow
+      AIRFLOW_CONN_SPARK_DEFAULT: spark://local
+      ARTSEARCH_INTAKE_SCHEDULE: "${ARTSEARCH_INTAKE_SCHEDULE:-}"
+      ARTSEARCH_SPARK_AUDIT_SCHEDULE: "${ARTSEARCH_SPARK_AUDIT_SCHEDULE:-}"
+      ARTSEARCH_PRODUCTION_CONFIG: configs/production.docker.toml
+      ARTSEARCH_ACTORS_FILE: config/bluesky_actors.local.txt
+      PYSPARK_PYTHON: /usr/local/bin/python
+      PYSPARK_DRIVER_PYTHON: /usr/local/bin/python
+    ports:
+      - "127.0.0.1:${AIRFLOW_PORT:-8081}:8080"
+    volumes:
+      - ./data:/opt/artsearch/data
+      - ./config:/opt/artsearch/config:ro
+      - ./configs:/opt/artsearch/configs:ro
+      - airflow-state:/opt/airflow
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_started
+    restart: unless-stopped
+
+  ml:
+    profiles: ["tools"]
+    image: artsearch-ml:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ml
+    command: ["sleep", "infinity"]
+    user: *app-user
+    environment: *app-environment
+    volumes: *app-volumes
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_started
+
+volumes:
+  airflow-state:
+  postgres-data:
+  qdrant-data:

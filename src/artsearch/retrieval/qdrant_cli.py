@@ -45,7 +45,7 @@ def main() -> None:
                         "alias_name": qdrant.alias_name,
                         "vectors": {
                             qdrant.clip_vector_name: qdrant.clip_dimension,
-                            qdrant.dino_vector_name: qdrant.dino_dimension,
+                            qdrant.csd_vector_name: qdrant.csd_dimension,
                         },
                         "datatype": qdrant.datatype,
                         "require_sfw": qdrant.require_sfw,
@@ -173,7 +173,6 @@ def main() -> None:
                     args.artwork_id,
                     top_k=args.top_k,
                     include_query_artist=not args.exclude_query_artist,
-                    use_patch_rerank=not args.no_patch_rerank,
                 )
             print(json.dumps([hit.to_dict() for hit in hits], sort_keys=True))
             return
@@ -199,7 +198,7 @@ def main() -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Publish and query the ArtSearch CLIP/DINO Qdrant serving index."
+        description="Publish and query the ArtSearch CLIP/CSD Qdrant serving index."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -275,18 +274,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_config_paths(evaluate)
     evaluate.add_argument("--sample-size", type=int, default=50)
-    evaluate.add_argument("--top-k", type=int, default=20)
+    evaluate.add_argument("--top-k", type=int, default=100)
     evaluate.add_argument("--seed", type=int, default=0)
 
     artwork = subparsers.add_parser(
         "search-artwork",
-        help="Run CLIP subject + DINO global RRF and optional exact patch reranking.",
+        help="Run CLIP subject + CSD style reciprocal-rank fusion.",
     )
     _add_config_paths(artwork)
     artwork.add_argument("artwork_id")
     artwork.add_argument("--top-k", type=int, default=20)
     artwork.add_argument("--exclude-query-artist", action="store_true")
-    artwork.add_argument("--no-patch-rerank", action="store_true")
 
     text = subparsers.add_parser(
         "search-text",

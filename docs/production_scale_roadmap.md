@@ -4,7 +4,7 @@ Status: architecture north star and delivery plan
 
 Recorded: 2026-08-12
 
-Current implementation baseline: v0.3.1
+Current representation update: 2026-08-20
 
 This document records the intended path from the current private MVP to a
 production-scale visual search system. It translates the supplied "Aesthetic
@@ -19,6 +19,10 @@ recorded in `docs/production_capacity_profile.md`.
 The first production data-platform slice, including Airflow, Spark, Polars,
 HTTPX, and S3-compatible storage, is implemented and documented in
 `docs/production_data_platform.md`.
+The closed-alpha cloud topology selected on 2026-08-19 is recorded in
+`docs/adr/0001-alpha-cloud-topology.md`. That ADR supersedes earlier language in
+this roadmap and its research inputs that places serving or model work on the
+developer workstation.
 
 The current implementation remains documented in `docs/mvp_report.md` and
 `docs/artsearch_architecture.puml`. Those documents describe what runs today;
@@ -43,9 +47,9 @@ faster.
 ### Approved Operating Envelope
 
 The initial searchable corpus is 5,000 accepted artworks, growing to 100,000 at
-three months, 500,000 at eight months, and 1,000,000 at twelve months. Ordinary
-first-year intake is about 2,000 candidates/day, with the implementation sized
-for backfills of 10,000 candidates/day and 5,000 accepted images/day. Mature
+three months, 500,000 at eight months, and 1,000,000 at twelve months. Scheduled
+first-year intake now targets 5,000 candidates/day, with the implementation
+sized for backfills of 10,000 candidates/day and 5,000 accepted images/day. Mature
 maintenance is about 500 candidates/day.
 
 The first alpha serves approximately five invited users on best-effort,
@@ -63,17 +67,17 @@ ArtSearch v0.3.1 establishes a useful vertical slice:
 | Collection | Manual folders and read-only Bluesky author-feed collection |
 | Qualification | Decode/media rules, provenance rules, text signals, and SigLIP 2 zero-shot artwork triage |
 | Corpus | Local raw and processed files with SQLite metadata and audit evidence |
-| Features | CLIP global image vectors, DINOv2 pooled vectors, and DINOv2 patch grids |
-| Recall | Exact in-memory DINO pooled cosine search |
-| Precision | DINO patch MaxSim reranking over a configurable shortlist |
-| Semantic evidence | CLIP cosine rank is calculated independently and displayed diagnostically |
+| Features | CLIP subject vectors and Contrastive Style Descriptor vectors |
+| Recall | Independent exact CLIP and CSD cosine search; Qdrant named-vector ANN is implemented |
+| Fusion | Reciprocal-rank fusion over the CLIP/CSD recall-set union |
+| Evidence | Final fusion, CLIP subject, and CSD style scores/ranks are independently auditable |
 | Evaluation | Static local workbench, review sessions, judgment exports, and offline metrics |
 | Production data platform | Airflow intake/audit DAGs, HTTPX connection controls, Polars Parquet manifests, s3fs immutable storage, and Spark corpus reconciliation |
 
-The current default ranking is not a weighted CLIP/DINO mega-vector. DINO
-pooled similarity creates the shortlist, DINO patch MaxSim determines final
-order, and CLIP remains a separate semantic lens. That separation is worth
-preserving as retrieval becomes more sophisticated.
+The current default ranking is not a weighted mega-vector. CLIP subject and CSD
+style retrieval create independent recall lists, then reciprocal-rank fusion
+orders their union. That separation is worth preserving as retrieval becomes
+more sophisticated.
 
 ## Architectural Commitments
 
@@ -85,7 +89,7 @@ The following are directional commitments for the production design.
 | Retrieval shape | Multi-representation, multi-stage candidate funnel |
 | Corpus bytes | Object storage rather than database BLOBs |
 | Canonical metadata | Durable relational store; Qdrant is a derived serving index, not the source of truth |
-| Patch features | Low-resolution DINO grids stored as compressed B2 artifacts and fetched only for reranking candidates |
+| Style features | One normalized CSD vector per artwork; no active patch artifact tier |
 | Hybrid recall | Union candidates from semantic, visual, style/facet, sparse/text, and metadata-aware retrieval |
 | Ranking evidence | Preserve every component score and stage rank independently |
 | Deployment | Versioned index builds with shadow validation and alias-based promotion |
@@ -93,24 +97,17 @@ The following are directional commitments for the production design.
 
 ### Starred North-Star Decisions
 
-**[STAR] Compact patch late interaction:** retain DINO patch MaxSim, but make a
-`16x16` token grid the initial production target instead of the current
-`32x32` grid. This reduces stored patch tokens by 4x and the pairwise MaxSim
-similarity matrix by approximately 16x. The full-resolution grid remains an
-offline quality ceiling for ablation tests, not a production requirement.
+**[STAR] Artistic-style representation:** CSD is now the compact production
+baseline for artistic style. After sufficient style judgments exist, evaluate
+calibration, a learned projection, or parameter-efficient fine-tuning against
+the pinned CSD baseline. Any replacement must use content-balanced data and
+improve held-out style retrieval before receiving a new physical index version.
 
-**[STAR] Learned artistic-style representation:** after sufficient human style
-judgments exist, adapt a frozen DINO backbone with LoRA and a compact projection
-head. Style-specific contrastive or ranking supervision should define the
-target space; a DINO-style teacher consistency objective can preserve useful
-visual structure. The resulting normalized vector becomes a versioned Qdrant
-`style` named vector. This future style vector complements rather than replaces
-the low-resolution patch-detail reranker.
-
-For the frugal alpha, these choices are now fixed: Backblaze B2 object storage,
-PostgreSQL metadata and job leases, single-node Qdrant OSS, local model workers,
-and Docker Compose/service units. They remain adapter boundaries so measured
-growth can justify a managed replacement later.
+For the frugal cloud alpha, these choices are now fixed: Cloudflare R2 object
+storage, Neon PostgreSQL, Qdrant Cloud, ephemeral Modal model workers, and one
+small VM for the public API plus Airflow control plane. The developer workstation
+is no longer a serving or inference dependency. These remain adapter boundaries
+so measured growth can justify a managed replacement later.
 
 ## Production North Star
 
@@ -124,7 +121,7 @@ Manual uploads / Bluesky / future connectors
     -> moderation, provenance, SigLIP gate, human review
     -> canonical derivatives and corpus-version membership
     -> versioned embedding jobs
-    -> metadata database + Qdrant named-vector indexes + versioned patch storage
+    -> metadata database + Qdrant named-vector indexes
 
 ONLINE QUERY PLANE
 
@@ -133,8 +130,7 @@ Text / reference image / positive and negative examples / filters / controls
     -> semantic, visual, style, facet, sparse, and metadata query plans
     -> parallel ANN and filtered recall
     -> candidate union and deduplication
-    -> exact normalized multi-score fusion
-    -> low-resolution DINO patch late interaction [STAR]
+    -> exact normalized multi-score or rank fusion
     -> optional joint VLM reranker
     -> diversity, duplicate, safety, and policy pass
     -> ranked results with complete evidence
@@ -194,8 +190,8 @@ Serving removal and historical retention are separate policies.
 
 | Store | Owns | Does not own |
 | --- | --- | --- |
-| Object store | Accepted canonical images, temporary review previews, patch-feature artifacts, and backups | Workflow truth or ranking policy |
-| Relational metadata store | Identity, provenance, workflow state, decisions, versions, deletion state | Large image or patch BLOBs |
+| Object store | Accepted canonical images, temporary review previews, model artifacts, and backups | Workflow truth or ranking policy |
+| Relational metadata store | Identity, provenance, workflow state, decisions, versions, deletion state | Large image BLOBs |
 | Qdrant | Derived global vectors and filterable serving payload | Canonical metadata or full audit history |
 | Queue/job system | Pending work, leases, retry scheduling, dead letters | Permanent corpus truth |
 | Metrics/log system | Aggregated operational telemetry and searchable events | User-facing result state |
@@ -224,13 +220,12 @@ Required intake dashboards should include:
 
 - Items discovered, downloaded, decoded, curated, embedded, and published per
   minute.
-- Images per second for SigLIP, CLIP, DINO global, and DINO patch batches.
+- Images per second for SigLIP, CLIP, and CSD batches.
 - Queue depth, oldest-item age, worker concurrency, and end-to-end freshness lag.
 - p50, p95, and p99 queue and execution latency for every stage.
 - Retry, permanent failure, dead-letter, duplicate, and stale-version rates.
 - ACCEPT, REVIEW, REJECT, and ERROR distributions by source and policy version.
-- Cache hit rate, network bytes, object-store growth, vector count, and patch
-  feature growth.
+- Cache hit rate, network bytes, object-store growth, and vector count.
 - CPU, RAM, GPU utilization, GPU memory, batch fill rate, and cost per thousand
   successfully published images.
 
@@ -244,8 +239,8 @@ should carry named vectors and a compact payload. Illustrative vector slots are:
 | Named vector | Initial role |
 | --- | --- |
 | `semantic` | Text/image concept retrieval using the selected multimodal model |
-| `visual_global` | DINO global appearance, pose, composition, and visual structure |
-| `style` | Starred DINO-LoRA style projection after enough preference labels exist |
+| `clip_subject` | CLIP text/image concept, subject, and semantic recall |
+| `csd_style` | CSD artistic-style recall |
 | `facet_*` | Selected compositional or visual facets justified by evaluation |
 
 The exact model behind a logical slot must not change inside a live physical
@@ -299,35 +294,19 @@ The supplied architecture suggests this starting funnel shape:
 | --- | ---: | --- |
 | Multi-ANN and filtered recall | 2,000-10,000 union | Maximize coverage across representations |
 | Exact normalized fusion | About 300 | Recompute trustworthy component scores and apply query controls |
-| Low-resolution patch late interaction | About 50 | Match local anatomy, pose, objects, marks, and composition with a compact DINO grid |
 | Optional joint VLM reranker | About 20 | Reason about complex query-image relations when value exceeds cost |
 | Diversity/deduplication/policy | Final page | Avoid redundant or disallowed results |
 
 These are experimental budgets, not service-level objectives. They should be
 tuned from corpus size, latency measurements, and recall curves.
 
-### Patch Feature Strategy
+### Retired Patch Strategy
 
-DINO patch MaxSim is the current ColBERT-style late-interaction layer. At scale,
-patch matrices must not be globally HNSW-indexed or loaded for the entire
-corpus. Store them in B2 as versioned compressed artifacts addressable by
-`artwork_version_id` and `feature_set_id`, then fetch only the rerank shortlist
-through a bounded local disk cache. A Qdrant multivector remains an ablation,
-not the budget-profile default.
-
-Production patch artifacts should initially target a `16x16` token grid rather
-than the current `32x32` grid. The implementation may obtain that grid through a
-lower-resolution encoder pass or deterministic spatial pooling; the choice must
-be benchmarked because the former also reduces ingest compute while the latter
-preserves the current global DINO pass. Patch resolution, derivation method,
-storage dtype, and normalization must be part of the feature-set fingerprint.
-
-The reranker should batch-fetch only the compact patch grids for its candidate
-set, perform GPU- or vectorized-CPU scoring, and report fetch time separately
-from compute time. Before promotion, compare `16x16` retrieval against the
-current `32x32` baseline using the same saved judgments and candidate pools.
-Further quantization, token pruning, and approximate late interaction remain
-evidence-dependent optimizations.
+DINO patch MaxSim and its patch-artifact tier were removed from the active
+architecture in ADR 0002. The resulting system has a much smaller feature and
+serving footprint. It also no longer has a dedicated local-detail retriever.
+Judged query failures should determine whether that capability returns as a
+compact late-interaction model, a VLM reranker, or another evaluated component.
 
 ### Retrieval Version Contract
 
@@ -369,8 +348,8 @@ Every query should create a trace containing the requested evidence:
 | `candidate_set` | Candidate IDs and stage membership; use a bounded artifact for large sets |
 | `ranking_scores` | Raw/normalized component scores, stage ranks, and final score |
 | `model_version` | Complete model and preprocessing fingerprints |
-| `index_version` | Corpus, physical index, HNSW, payload, and patch-store versions |
-| `latency_breakdown` | Compile, encode, each recall source, union, fusion, patch, policy, fetch, and total |
+| `index_version` | Corpus, physical index, HNSW, and payload versions |
+| `latency_breakdown` | Compile, encode, each recall source, union, fusion, policy, fetch, and total |
 | `clicked_result` | Artwork ID from a result impression |
 | `result_rank` | Rank as actually shown when the interaction occurred |
 | `like_dislike` | Explicit preference event, not inferred from a click |
@@ -500,7 +479,7 @@ Deliverables:
 Exit condition: Qdrant meets the chosen recall and latency envelope under
 representative filters, and index drift is observable.
 
-### Phase 3: Hybrid Funnel and Patch Service
+### Phase 3: Hybrid Funnel
 
 Deliverables:
 
@@ -508,9 +487,7 @@ Deliverables:
 - Candidate union, canonical deduplication, source attribution, and first RRF
   baseline.
 - Exact score recomputation and versioned normalization/fusion.
-- Batched patch retrieval and DINO MaxSim reranking path.
-- Low-resolution-versus-full-resolution patch ablations covering quality,
-  storage, fetch latency, and compute latency.
+- CLIP/CSD ablations plus calibrated or weighted fusion candidates.
 - Per-stage recall and ablation reports using saved judgments.
 
 Exit condition: every final result explains which recall paths found it, how
@@ -536,7 +513,7 @@ evaluation set without guessing which model produced it.
 
 ### Phase 5: Learning and Advanced Reranking
 
-Deliverables are evidence-dependent: the starred DINO-LoRA style projection,
+Deliverables are evidence-dependent: CSD adaptation or a learned style projection,
 calibrated fusion, preference models, hard-negative mining, facet models, and an
 optional joint VLM reranker. Style training should use content-balanced
 positives and hard negatives, held-out evaluation, and teacher consistency as a
@@ -549,7 +526,7 @@ before entering the default path.
 These are part of the north star but should not be treated as immediate
 requirements:
 
-- Replacing the currently pinned DINOv2 model with DINOv3 or another encoder.
+- Replacing the currently pinned CSD artifact with another style encoder.
 - Choosing SigLIP, CLIP, or another model for the production semantic index.
 - Training a learned style projection before enough human preference data exists.
 - Storing many speculative facet vectors before showing incremental value.

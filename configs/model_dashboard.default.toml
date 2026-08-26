@@ -1,0 +1,41 @@
+version = "1.0.0"
+refresh_seconds = 30
+snapshot_cache_seconds = 5
+qdrant_probe_timeout_seconds = 1.0
+drift_recent_days = 7
+drift_baseline_days = 30
+product_metrics_window_days = 30
+
+[review]
+enabled = true
+filter_queue_limit = 250
+retrieval_result_count = 8
+media_jpeg_quality = 88
+conceal_media_by_default = false
+
+[targets]
+embedding_coverage_warning = 0.99
+embedding_coverage_critical = 0.95
+filter_error_rate_warning = 0.02
+filter_error_rate_critical = 0.05
+filter_accept_precision = 0.95
+minimum_filter_labels = 100
+minimum_retrieval_judgments = 100
+minimum_retrieval_queries = 20
+retrieval_precision_at_5 = 0.70
+retrieval_ndcg = 0.75
+ann_mean_recall_at_k = 0.95
+ann_minimum_recall_at_k = 0.90
+filter_p95_latency_ms = 15000
+search_p95_latency_ms = 5000
+search_error_rate_warning = 0.05
+search_error_rate_critical = 0.15
+feedback_precision_at_10 = 0.50
+feedback_ndcg_at_10 = 0.65
+minimum_complete_feedback_queries = 10
+pipeline_success_rate_warning = 0.95
+decision_freshness_days = 7
+minimum_drift_cohort = 50
+class_distribution_js_warning = 0.10
+class_distribution_js_critical = 0.20
+maximum_top_artist_share = 0.25

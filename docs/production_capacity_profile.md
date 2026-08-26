@@ -5,9 +5,17 @@ Status: recorded operating decisions for the production intake build
 Recorded: 2026-08-12
 
 This profile turns the production roadmap into a capacity and spending envelope.
-It supersedes generic managed-cloud recommendations for the first alpha. The
+It superseded generic managed-cloud recommendations for the first alpha until
+the cloud-serving decision recorded on 2026-08-19. The current deployment
+topology is now governed by `docs/adr/0001-alpha-cloud-topology.md`; the capacity
+arithmetic and quality gates in this document remain active. The
 corpus milestones below mean accepted, searchable artworks rather than source
 candidates.
+
+> **Representation update (2026-08-20):** ADR 0002 removed DINO global and
+> patch features from the active system. CSD is now the single 768-dimensional
+> style representation. Historical patch-storage calculations below have been
+> replaced with the current CLIP/CSD footprint.
 
 ## Recorded Targets
 
@@ -17,7 +25,7 @@ candidates.
 | Three-month corpus | 100,000 accepted artworks |
 | Eight-month corpus | 500,000 accepted artworks |
 | Twelve-month corpus | 1,000,000 accepted artworks |
-| First-year ordinary intake | About 2,000 source candidates/day plus backfills |
+| First-year ordinary intake | Target 5,000 source candidates/day plus backfills |
 | Mature maintenance intake | About 500 source candidates/day |
 | Design capacity | 10,000 candidates/day and 5,000 accepted artworks/day |
 | Infrastructure budget | USD 20-50/month, excluding existing hardware and electricity |
@@ -38,10 +46,11 @@ The milestones are more aggressive than a flat 2,000 accepted images/day:
 | Full year after initial 5,000 | 995,000 | 2,726 average |
 
 A flat 2,000 accepted images/day reaches approximately 735,000 images after one
-year, and 2,000 *candidates* per day reaches less after rejects. The system will
-therefore support 5,000 accepted images/day and at least 10,000 candidates/day,
-while normal operation can remain near 2,000 candidates/day and use scheduled
-backfills to meet the milestones.
+year, and 2,000 *candidates* per day reaches less after rejects. Scheduled local
+operation now targets 5,000 candidates/day. The system remains designed for
+10,000-candidate backfills and 5,000 accepted images/day; measured acceptance
+coverage determines whether the million-image milestone needs additional
+backfill days.
 
 Even 10,000 candidates/day is only 0.116 candidates/second averaged across a
 day. This is a durability and storage problem, not a distributed-throughput
@@ -58,10 +67,9 @@ Bluesky Tap/AppView + manual imports
        -> REJECT: decision evidence only; delete bytes
        -> REVIEW: compact preview with a short TTL
        -> ACCEPT: one sanitized canonical image in Backblaze B2
-    -> local CLIP/DINO batch workers
+    -> local CLIP/CSD batch workers
     -> named global vectors in Qdrant OSS
-    -> compact DINO patch artifact in B2
-    -> local disk LRU fetch + MaxSim over the shortlist
+    -> reciprocal-rank fusion of subject and style recall
     -> private alpha API/dashboard
 ```
 
@@ -75,7 +83,7 @@ Bluesky Tap/AppView + manual imports
 | Object storage | Backblaze B2 through a narrow S3-compatible adapter | Reconsider R2 if public egress or edge delivery dominates cost |
 | Vector search | Single-node Qdrant OSS, on disk where appropriate | Larger single node first; replicas only when availability becomes a product need |
 | Qdrant Cloud | Optional free shadow/prototype only | Paid Cloud must win a measured operations/cost comparison |
-| Patch features | Compressed `16x16 x 768` artifacts in B2 plus local LRU | Quantize or prune only after exact quality comparison |
+| Style features | One normalized 768D CSD vector in Qdrant | Replace only after held-out style judgments show a gain |
 | Deployment | Docker Compose plus service units | A small single VPS for the private alpha; no Kubernetes |
 | Backups | Daily PostgreSQL dump and periodic Qdrant snapshot to B2 | Increase retention after restore drills expose the need |
 
@@ -115,35 +123,16 @@ fingerprint, and provenance evidence.
 
 ## Feature Storage
 
-The current SQLite file demonstrates why patch matrices need a different home:
-117 embedding rows occupy about 370 MB, of which about 368 MB, or 99.5%, is the
-current DINO patch BLOB column.
+The active Qdrant point has a 512-dimensional CLIP vector and a 768-dimensional
+CSD vector. At float16, their raw values total 2,560 bytes per artwork, or about
+2.38 GiB for one million artworks before HNSW and payload overhead. The
+canonical SQLite float32 copy totals 5,120 bytes per artwork, or about 4.77 GiB
+for one million rows before database overhead.
 
-At the starred compact patch setting:
-
-```text
-256 patches x 768 dimensions x 2 bytes float16 = 384 KiB/image
-1,000,000 images                                = about 366 GiB
-```
-
-One 768-dimensional float16 global vector is only about 1.43 GiB per million
-images. Store only `semantic` and `visual_global` named global vectors in the
-initial Qdrant collection. The future learned `style` vector is added as a new
-versioned collection after it has evaluation evidence.
-
-Patch artifacts do not belong in PostgreSQL and do not belong in the first
-Qdrant deployment. Store them as checksummed objects keyed by artwork version
-and feature fingerprint. Fetch only the final rerank shortlist. A top-50 query
-reads at most about 18.75 MiB of raw float16 patches before compression; a local
-disk LRU should absorb repeated results.
-
-Before 500,000 images, benchmark:
-
-- float16 versus int8 patch values;
-- direct low-resolution DINO inference versus pooled `32x32` features;
-- zstd/NPZ storage size and decode latency;
-- exact rank agreement and nDCG against the current full patch baseline;
-- Qdrant float16, scalar quantization, and on-disk global-vector settings.
+This is a major reduction from the retired patch-matrix design. Before 500,000
+images, benchmark Qdrant float16, scalar quantization, and on-disk vector/index
+settings against exact CLIP and CSD search. Keep model artifacts and manifests
+in object storage; do not create a per-artwork patch artifact tier.
 
 ## Cost Envelope
 
@@ -152,15 +141,15 @@ and includes egress up to three times average stored data. Cloudflare R2
 Standard is USD 0.015/GB-month with free egress. With five alpha users and a
 read-through local cache, B2 is the cheaper initial choice.
 
-Using a 250 KiB canonical image plus a raw 384 KiB compact patch artifact gives
-this conservative base estimate before compression:
+Using a 250 KiB canonical image gives this conservative object-storage estimate
+before manifests, reports, and backups:
 
 | Corpus | Base artifacts | Approximate B2 storage/month |
 | ---: | ---: | ---: |
-| 5,000 | 3.25 GB | Free tier |
-| 100,000 | 64.9 GB | USD 0.38 |
-| 500,000 | 324.6 GB | USD 2.19 |
-| 1,000,000 | 649.2 GB | USD 4.44 |
+| 5,000 | 1.28 GB | Free tier |
+| 100,000 | 25.6 GB | About USD 0.18 |
+| 500,000 | 128 GB | About USD 0.89 |
+| 1,000,000 | 256 GB | About USD 1.78 |
 
 Allow USD 6-10/month at one million images for manifests, reports, database
 backups, snapshots, temporary feature versions, and growth headroom. Keep only
@@ -214,15 +203,14 @@ examples.
 ### 100,000 images
 
 - Measured intake throughput and per-stage cost are stable.
-- Compact patch artifacts and local-cache reranking pass quality tests.
+- CLIP/CSD fusion beats both single-vector baselines on held-out judgments.
 - HNSW parameters are selected against exact ground truth.
 - Backup restore, Qdrant rebuild, and source-delete drills pass.
 
 ### 500,000 images
 
 - Quantization and on-disk settings have measured recall/resource reports.
-- Remote alpha hosting is moved to one VPS only if workstation serving is a
-  practical problem.
+- Remote alpha hosting follows ADR 0001 and does not depend on the workstation.
 - Object, vector, database, and cache growth remain inside warning budgets.
 
 ### 1,000,000 images

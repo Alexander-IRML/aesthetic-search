@@ -13,6 +13,14 @@ from airflow.sdk import DAG, Param, get_current_context, task
 
 PROJECT_ROOT = Path(os.environ.get("ARTSEARCH_PROJECT_ROOT", "/opt/artsearch")).resolve()
 INTAKE_SCHEDULE = os.environ.get("ARTSEARCH_INTAKE_SCHEDULE") or None
+PRODUCTION_CONFIG = os.environ.get(
+    "ARTSEARCH_PRODUCTION_CONFIG",
+    "configs/production.default.toml",
+)
+ACTORS_FILE = os.environ.get(
+    "ARTSEARCH_ACTORS_FILE",
+    "config/bluesky_actors.local.txt",
+)
 
 
 def _project_path(value: str) -> Path:
@@ -53,15 +61,17 @@ with DAG(
         "retry_delay": timedelta(minutes=5),
     },
     params={
-        "actors_file": Param("config/bluesky_safe_pilot.local.txt", type="string"),
+        "actors_file": Param(ACTORS_FILE, type="string"),
         "bluesky_config": Param("configs/bluesky.default.toml", type="string"),
         "filter_config": Param("configs/artwork_filter.default.toml", type="string"),
         "prompt_config": Param("configs/artwork_filter.prompts.v1.toml", type="string"),
         "app_config": Param("config/config.yaml", type="string"),
-        "production_config": Param("configs/production.default.toml", type="string"),
+        "production_config": Param(PRODUCTION_CONFIG, type="string"),
         "run_root": Param("data/production/runs", type="string"),
         "max_pages": Param(1, type="integer", minimum=1, maximum=100),
         "page_limit": Param(100, type="integer", minimum=1, maximum=100),
+        "candidate_target": Param(5000, type="integer", minimum=1, maximum=100000),
+        "max_candidates_per_actor": Param(20, type="integer", minimum=1, maximum=100),
         "feed_filter": Param("posts_with_media", type="string"),
         "deterministic_only": Param(False, type="boolean"),
         "fail_on_any_errors": Param(False, type="boolean"),
@@ -119,6 +129,10 @@ with DAG(
             str(params["page_limit"]),
             "--feed-filter",
             str(params["feed_filter"]),
+            "--max-candidates",
+            str(params["candidate_target"]),
+            "--max-candidates-per-actor",
+            str(params["max_candidates_per_actor"]),
         ]
         if bool(params["deterministic_only"]):
             command.append("--deterministic-only")
@@ -158,6 +172,19 @@ with DAG(
             raise RuntimeError("Bluesky pipeline did not emit its JSON summary")
         return {**run, "pipeline_summary": summary}
 
+    @task(execution_timeout=timedelta(minutes=10))
+    def validate_object_store(run: dict[str, str]) -> dict[str, object]:
+        from artsearch.production.config import load_production_config
+        from artsearch.production.object_store import build_object_store, verify_object_store
+
+        params = get_current_context()["params"]
+        production = load_production_config(_project_path(str(params["production_config"])))
+        result = verify_object_store(
+            build_object_store(production.object_store),
+            Path(run["run_dir"]) / "canary",
+        )
+        return {**run, "object_store_canary": result.to_dict()}
+
     @task(execution_timeout=timedelta(hours=4))
     def publish_originals(run: dict[str, object]) -> dict[str, object]:
         from artsearch.ingest.config import load_config
@@ -179,6 +206,10 @@ with DAG(
                 str(run["decisions"]),
                 required_decision="accept",
             ),
+            upload_concurrency=production.object_store.upload_concurrency,
+            checkpoint_batch_size=production.object_store.upload_checkpoint_batch_size,
+            max_attempts=production.object_store.upload_max_attempts,
+            retry_base_seconds=production.object_store.upload_retry_base_seconds,
         )
         if corpus.failed or corpus.missing:
             raise RuntimeError(
@@ -201,9 +232,39 @@ with DAG(
         return {**run, "embedding_summary": summary}
 
     @task(execution_timeout=timedelta(hours=4))
+    def publish_postgres(run: dict[str, object]) -> dict[str, object]:
+        from artsearch.ingest.config import load_config
+        from artsearch.postgres.database import build_engine
+        from artsearch.postgres.migration import (
+            candidate_ids_from_jsonl,
+            publish_sqlite_snapshot,
+        )
+        from artsearch.postgres.model_lineage import model_bundle_record
+        from artsearch.production.config import load_production_config
+
+        params = get_current_context()["params"]
+        production = load_production_config(_project_path(str(params["production_config"])))
+        if not production.postgres.enabled:
+            return {**run, "postgres_summary": {"enabled": False, "skipped": True}}
+        app = load_config(_project_path(str(params["app_config"])))
+        engine = build_engine(production.postgres, direct=True)
+        try:
+            report = publish_sqlite_snapshot(
+                app.database_path,
+                engine,
+                candidate_ids=candidate_ids_from_jsonl(str(run["decisions"])),
+                qdrant_collection_name=(
+                    production.qdrant.collection_name if production.qdrant.enabled else None
+                ),
+                model_bundle=model_bundle_record(app.models, production.qdrant),
+            )
+        finally:
+            engine.dispose()
+        return {**run, "postgres_summary": {"enabled": True, **report.to_dict()}}
+
+    @task(execution_timeout=timedelta(hours=4))
     def sync_qdrant_index(run: dict[str, object]) -> dict[str, object]:
         from artsearch.ingest.config import load_config
-        from artsearch.ingest.db import connect
         from artsearch.production.config import load_production_config
         from artsearch.retrieval.qdrant import (
             build_qdrant_client,
@@ -217,13 +278,32 @@ with DAG(
         app = load_config(_project_path(str(params["app_config"])))
         client = build_qdrant_client(production.qdrant)
         try:
-            with connect(app.database_path) as connection:
-                result = sync_qdrant_from_sqlite(
-                    connection,
-                    app,
-                    production.qdrant,
-                    client,
-                )
+            if production.postgres.enabled:
+                from artsearch.postgres.database import build_engine
+                from artsearch.postgres.qdrant_outbox import drain_qdrant_outbox
+
+                engine = build_engine(production.postgres)
+                try:
+                    result = drain_qdrant_outbox(
+                        engine,
+                        app,
+                        production.qdrant,
+                        client,
+                        worker_id=f"airflow:{run['run_id']}",
+                        batch_size=production.postgres.outbox_batch_size,
+                    )
+                finally:
+                    engine.dispose()
+            else:
+                from artsearch.ingest.db import connect
+
+                with connect(app.database_path) as connection:
+                    result = sync_qdrant_from_sqlite(
+                        connection,
+                        app,
+                        production.qdrant,
+                        client,
+                    )
         finally:
             client.close()
         return {**run, "qdrant_summary": {"enabled": True, **result.to_dict()}}
@@ -279,7 +359,7 @@ with DAG(
             ).to_dict()
 
         bundle = {
-            "bundle_version": "artsearch-intake-run-v1",
+            "bundle_version": "artsearch-intake-run-v2",
             "run_id": run["run_id"],
             "production_config_version": production.version,
             "production_config_hash": production.config_hash,
@@ -287,9 +367,11 @@ with DAG(
             "manifest_summary": run["manifest_summary"],
             "metrics_summary": run["metrics_summary"],
             "embedding_summary": run["embedding_summary"],
+            "postgres_summary": run["postgres_summary"],
             "qdrant_summary": run["qdrant_summary"],
             "artifacts": artifact_refs,
             "corpus_publish": run["corpus_publish"],
+            "object_store_canary": run["object_store_canary"],
         }
         bundle_path = Path(str(run["bundle"]))
         bundle_path.write_text(
@@ -311,8 +393,10 @@ with DAG(
             "qdrant_points": run["qdrant_summary"].get("remote_count", 0),
         }
 
-    collected = collect_and_filter(prepare_run())
+    storage_ready = validate_object_store(prepare_run())
+    collected = collect_and_filter(storage_ready)
     published = publish_originals(collected)
     embedded = generate_retrieval_embeddings(published)
-    indexed = sync_qdrant_index(embedded)
+    canonical = publish_postgres(embedded)
+    indexed = sync_qdrant_index(canonical)
     publish_run(build_data_products(indexed))

@@ -16,6 +16,10 @@ class ObjectStoreConfig(BaseModel):
     prefix: str = "artsearch"
     endpoint_url: str = ""
     region: str = ""
+    upload_concurrency: int = 8
+    upload_checkpoint_batch_size: int = 256
+    upload_max_attempts: int = 4
+    upload_retry_base_seconds: float = 0.5
 
     @field_validator("prefix")
     @classmethod
@@ -33,6 +37,14 @@ class ObjectStoreConfig(BaseModel):
             raise ValueError("object_store.bucket is required for the s3 provider")
         if self.endpoint_url and not self.endpoint_url.startswith("https://"):
             raise ValueError("object_store.endpoint_url must use HTTPS")
+        if self.upload_concurrency <= 0:
+            raise ValueError("object_store.upload_concurrency must be positive")
+        if self.upload_checkpoint_batch_size <= 0:
+            raise ValueError("object_store.upload_checkpoint_batch_size must be positive")
+        if self.upload_max_attempts <= 0:
+            raise ValueError("object_store.upload_max_attempts must be positive")
+        if self.upload_retry_base_seconds < 0:
+            raise ValueError("object_store.upload_retry_base_seconds must be non-negative")
         return self
 
 
@@ -55,12 +67,12 @@ class QdrantConfig(BaseModel):
     url_env: str = "QDRANT_URL"
     api_key_env: str = "QDRANT_API_KEY"
     require_api_key: bool = False
-    collection_name: str = "artworks_clip3_dino1_v1"
+    collection_name: str = "artworks_clip3_csd1_v2"
     alias_name: str = "artworks_active"
     clip_vector_name: str = "clip_subject"
-    dino_vector_name: str = "dino_global"
+    csd_vector_name: str = "csd_style"
     clip_dimension: int = 512
-    dino_dimension: int = 768
+    csd_dimension: int = 768
     datatype: Literal["float16", "float32"] = "float16"
     on_disk_vectors: bool = False
     on_disk_payload: bool = False
@@ -70,7 +82,6 @@ class QdrantConfig(BaseModel):
     hnsw_ef: int = 128
     prefetch_limit: int = 200
     fusion_limit: int = 100
-    patch_rerank_limit: int = 50
     max_results_per_artist: int = 2
     require_sfw: bool = True
     require_bluesky_accept: bool = True
@@ -82,7 +93,7 @@ class QdrantConfig(BaseModel):
         "collection_name",
         "alias_name",
         "clip_vector_name",
-        "dino_vector_name",
+        "csd_vector_name",
     )
     @classmethod
     def _nonempty_name(cls, value: str) -> str:
@@ -95,11 +106,11 @@ class QdrantConfig(BaseModel):
     def _validate_limits(self) -> "QdrantConfig":
         if self.collection_name == self.alias_name:
             raise ValueError("qdrant.collection_name and alias_name must differ")
-        if self.clip_vector_name == self.dino_vector_name:
+        if self.clip_vector_name == self.csd_vector_name:
             raise ValueError("Qdrant named vectors must have distinct names")
         positive = {
             "clip_dimension": self.clip_dimension,
-            "dino_dimension": self.dino_dimension,
+            "csd_dimension": self.csd_dimension,
             "batch_size": self.batch_size,
             "timeout_seconds": self.timeout_seconds,
             "hnsw_ef": self.hnsw_ef,
@@ -110,12 +121,48 @@ class QdrantConfig(BaseModel):
         for name, value in positive.items():
             if value <= 0:
                 raise ValueError(f"qdrant.{name} must be positive")
-        if self.patch_rerank_limit < 0:
-            raise ValueError("qdrant.patch_rerank_limit must be non-negative")
         if self.fusion_limit > self.prefetch_limit:
             raise ValueError("qdrant.fusion_limit must not exceed prefetch_limit")
-        if self.patch_rerank_limit > self.fusion_limit:
-            raise ValueError("qdrant.patch_rerank_limit must not exceed fusion_limit")
+        return self
+
+
+class PostgresConfig(BaseModel):
+    enabled: bool = False
+    require_tls: bool = False
+    database_url_env: str = "DATABASE_URL"
+    direct_url_env: str = "DATABASE_DIRECT_URL"
+    application_name: str = "artsearch"
+    pool_size: int = 5
+    max_overflow: int = 5
+    pool_timeout_seconds: int = 10
+    statement_timeout_ms: int = 15_000
+    telemetry_retention_days: int = 180
+    outbox_batch_size: int = 100
+
+    @field_validator("database_url_env", "direct_url_env", "application_name")
+    @classmethod
+    def _nonempty_postgres_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("PostgreSQL environment and application names must not be empty")
+        return normalized
+
+    @model_validator(mode="after")
+    def _validate_postgres_limits(self) -> "PostgresConfig":
+        positive = {
+            "pool_size": self.pool_size,
+            "pool_timeout_seconds": self.pool_timeout_seconds,
+            "statement_timeout_ms": self.statement_timeout_ms,
+            "telemetry_retention_days": self.telemetry_retention_days,
+            "outbox_batch_size": self.outbox_batch_size,
+        }
+        for name, value in positive.items():
+            if value <= 0:
+                raise ValueError(f"postgres.{name} must be positive")
+        if self.max_overflow < 0:
+            raise ValueError("postgres.max_overflow must be non-negative")
+        if self.database_url_env == self.direct_url_env:
+            raise ValueError("pooled and direct PostgreSQL URL environment names must differ")
         return self
 
 
@@ -124,6 +171,7 @@ class ProductionConfig(BaseModel):
     object_store: ObjectStoreConfig = Field(default_factory=ObjectStoreConfig)
     manifests: ManifestConfig = Field(default_factory=ManifestConfig)
     qdrant: QdrantConfig = Field(default_factory=QdrantConfig)
+    postgres: PostgresConfig = Field(default_factory=PostgresConfig)
     config_hash: str = ""
 
     @field_validator("version")

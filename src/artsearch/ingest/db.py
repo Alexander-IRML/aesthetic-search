@@ -28,6 +28,20 @@ def init_db(conn: sqlite3.Connection) -> None:
             "demo_eligible",
             "INTEGER NOT NULL DEFAULT 0 CHECK (demo_eligible IN (0, 1))",
         )
+    if _table_exists(conn, "embeddings"):
+        _ensure_column(conn, "embeddings", "csd_style", "BLOB")
+        _ensure_column(conn, "embeddings", "csd_style_dim", "INTEGER")
+        _ensure_column(conn, "embeddings", "model_name_csd", "TEXT")
+        _ensure_column(conn, "embeddings", "model_version_csd", "TEXT")
+        _remove_legacy_dino_embedding_columns(conn)
+    if _table_exists(conn, "bluesky_actor_intake_state"):
+        _ensure_column(
+            conn,
+            "bluesky_actor_intake_state",
+            "pending_high_water_post_uri",
+            "TEXT",
+        )
+        _ensure_column(conn, "bluesky_actor_intake_state", "resume_cursor", "TEXT")
     conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
     _ensure_column(conn, "artists", "source_platform", "TEXT DEFAULT 'manual'")
     _ensure_column(
@@ -58,6 +72,51 @@ def _ensure_column(
     columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
     if column_name not in columns:
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
+
+
+def _remove_legacy_dino_embedding_columns(conn: sqlite3.Connection) -> None:
+    """Rebuild legacy embedding tables so retired patch BLOBs cannot linger."""
+
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(embeddings)")}
+    if not any(
+        name.startswith("dino_")
+        or name.startswith("model_name_dino")
+        or name.startswith("model_version_dino")
+        for name in columns
+    ):
+        return
+    conn.execute("DROP TABLE IF EXISTS embeddings_csd_migration")
+    conn.execute(
+        """
+        CREATE TABLE embeddings_csd_migration (
+            artwork_id         TEXT PRIMARY KEY REFERENCES artworks(artwork_id),
+            clip_vector        BLOB,
+            clip_dim           INTEGER,
+            csd_style          BLOB,
+            csd_style_dim      INTEGER,
+            model_name_clip    TEXT,
+            model_version_clip TEXT,
+            model_name_csd     TEXT,
+            model_version_csd  TEXT,
+            date_computed      TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO embeddings_csd_migration (
+            artwork_id, clip_vector, clip_dim, csd_style, csd_style_dim,
+            model_name_clip, model_version_clip, model_name_csd,
+            model_version_csd, date_computed
+        )
+        SELECT artwork_id, clip_vector, clip_dim, csd_style, csd_style_dim,
+               model_name_clip, model_version_clip, model_name_csd,
+               model_version_csd, date_computed
+          FROM embeddings
+        """
+    )
+    conn.execute("DROP TABLE embeddings")
+    conn.execute("ALTER TABLE embeddings_csd_migration RENAME TO embeddings")
 
 
 def start_run(conn: sqlite3.Connection, script_name: str, notes: str | None = None) -> int:

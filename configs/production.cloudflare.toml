@@ -1,0 +1,58 @@
+version = "1.3.0-cloudflare"
+
+[object_store]
+# The query container never receives object-store credentials. The edge Worker
+# serves accepted corpus objects through its read-only R2 binding.
+provider = "local"
+local_root = "data/object_store"
+bucket = ""
+prefix = "artsearch"
+endpoint_url = ""
+region = ""
+upload_concurrency = 8
+upload_checkpoint_batch_size = 256
+upload_max_attempts = 4
+upload_retry_base_seconds = 0.5
+
+[manifests]
+local_dir = "data/production/manifests"
+object_prefix = "manifests"
+
+[postgres]
+enabled = true
+require_tls = true
+database_url_env = "DATABASE_URL"
+direct_url_env = "DATABASE_DIRECT_URL"
+application_name = "artsearch-cloudflare-search"
+pool_size = 2
+max_overflow = 1
+pool_timeout_seconds = 10
+statement_timeout_ms = 15000
+telemetry_retention_days = 180
+outbox_batch_size = 256
+
+[qdrant]
+enabled = true
+url = ""
+url_env = "QDRANT_URL"
+api_key_env = "QDRANT_API_KEY"
+require_api_key = true
+collection_name = "artworks_clip3_csd1_v2"
+alias_name = "artworks_active"
+clip_vector_name = "clip_subject"
+csd_vector_name = "csd_style"
+clip_dimension = 512
+csd_dimension = 768
+datatype = "float16"
+on_disk_vectors = false
+on_disk_payload = false
+batch_size = 256
+timeout_seconds = 30
+prefer_grpc = false
+hnsw_ef = 128
+prefetch_limit = 200
+fusion_limit = 100
+max_results_per_artist = 2
+require_sfw = true
+require_bluesky_accept = true
+promote_after_sync = true

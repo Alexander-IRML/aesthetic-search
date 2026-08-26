@@ -1,4 +1,4 @@
-' ArtSearch architecture as implemented through 2026-08-13.
+' ArtSearch architecture as implemented through 2026-08-26.
 ' Render all diagrams with:
 '   plantuml docs/artsearch_architecture.puml
 '
@@ -22,18 +22,32 @@ skinparam databaseBorderColor #374151
 skinparam folderBorderColor #374151
 
 actor "Local operator / reviewer" as Operator
+actor "Alpha search user" as AlphaUser
+actor "Windows Task Scheduler\n10:00, skip after 10:15" as WindowsScheduler
 cloud "Bluesky public AppView\n(no credentials)" as BlueskyAPI #DCEEFF
 cloud "Hugging Face Hub\n(runtime model source)" as HuggingFace #DCEEFF
+cloud "Cloudflare edge\nTLS / WAF / rate limit / CDN" as CloudflareEdge #DCEEFF
+cloud "R2 display derivatives\ncustom HTTPS domain" as PublicAssets #FFF8E7
+database "Qdrant Cloud\nactive named-vector alias" as CloudQdrant #FDECEC
 
 package "Command-line surfaces" #F4F5F7 {
   component "Manual ingest CLI\ninit-db / register-artists / standardize" as IngestCLI #E8F2FF
   component "Bluesky collector CLI\ncollect-author / collect-authors" as BlueskyCLI #E8F2FF
   component "Integrated Bluesky pipeline CLI\nrun-author / run-authors / process-jsonl" as PipelineCLI #E8F2FF
-  component "Corpus rebuild CLI\nSigLIP seed -> CLIP / DINO / gallery" as RebuildCLI #E8F2FF
+  component "Corpus rebuild CLI\nSigLIP seed -> CLIP / CSD / gallery" as RebuildCLI #E8F2FF
   component "Artwork-filter CLI\nclassify / review / evaluate / calibrate" as FilterCLI #E8F2FF
   component "Embedding CLI" as EmbedCLI #E8F2FF
   component "Retrieval and demo CLIs\nsearch / gallery / diagnostics" as RetrievalCLI #E8F2FF
   component "Qdrant CLI\npolicy / sync / ANN eval / search" as QdrantCLI #E8F2FF
+  component "PostgreSQL CLI\nupgrade / status / cutover / outbox" as PostgresCLI #E8F2FF
+  component "Model operations dashboard\nserve / snapshot / install launcher" as MonitoringCLI #E8F2FF
+  component "Daily intake launcher\nstatus / run-now / install-windows" as IntakeCLI #E8F2FF
+}
+
+package "Public image search" #F8FAFC {
+  component "Upload-first web workbench\nresponsive same-origin frontend" as SearchFrontend #E8F2FF
+  component "FastAPI search coordinator\nupload policy + stable top-10 contract" as SearchAPI #E8F7EE
+  component "Bounded query encoder\npinned CLIP subject + CSD style" as QueryEncoder #FFF4D6
 }
 
 package "Collection and ingestion" #F8FAFC {
@@ -44,6 +58,9 @@ package "Collection and ingestion" #F8FAFC {
   component "CorpusRouter\nACCEPT / REVIEW materialization" as Router #E8F7EE
   component "ArtworkFilterCorpusStore\naudit + accepted-row upsert" as CorpusStore #E8F7EE
   component "SigLIP corpus selector\ncurrent CID + artwork-like classes" as CorpusSelector #E8F7EE
+  component "Airflow intake DAG\n5,000 target + staged publication" as IntakeDAG #E8F7EE
+  component "Incremental source planner\nactor high-water + cursor + rotation" as SourcePlanner #E8F7EE
+  component "Canonical publisher\nverified scope + transactional outbox" as CanonicalPublisher #E8F7EE
 }
 
 package "Artwork-content triage" #F8FAFC {
@@ -61,14 +78,16 @@ package "Review and model evaluation" #F8FAFC {
   component "Append-only label importer\nexact-repeat suppression" as LabelImport #F3E8FF
   component "Evaluation + calibration\nexact decision replay, metrics, sweeps" as Evaluation #F3E8FF
   component "Real-model smoke test\nfinite + batch/single checks" as SmokeTest #F3E8FF
+  component "Read-only health aggregator\nquality + drift + operations alerts" as HealthSnapshot #F3E8FF
+  component "Local operations UI\noverview / quality / drift / lineage / review" as MonitoringUI #F3E8FF
+  component "HumanReviewService\nfilter labels + retrieval judgments" as HumanReview #F3E8FF
 }
 
 package "Embedding and retrieval" #F8FAFC {
   component "Embedding pipeline\nvalidated processed artwork batches" as EmbedPipeline #FDECEC
-  component "CLIP + DINOv2 provider\nsubject, pooled, patch features" as EmbeddingModels #FDECEC
-  component "Qdrant serving publisher\nsafe/demo policy + model lineage" as QdrantPublisher #FDECEC
-  component "CLIP + DINO ANN ensemble\nnamed vectors -> reciprocal-rank fusion" as Retrieval #FDECEC
-  component "DINO patch precision stage\nshortlist-only exact MaxSim" as PatchReranker #FDECEC
+  component "CLIP + CSD provider\nsubject + artistic-style vectors" as EmbeddingModels #FDECEC
+  component "Qdrant outbox publisher\nsafe/demo policy + model lineage" as QdrantPublisher #FDECEC
+  component "CLIP + CSD ANN ensemble\nnamed vectors -> reciprocal-rank fusion" as Retrieval #FDECEC
   component "Exploration direction math\nmean delta / shift / orthogonalize" as Directions #FDECEC
   component "Retrieval workbench\nbrowse + human relevance evaluation" as Demo #FDECEC
   component "Retrieval evaluator\nP@K / MRR / MAP / nDCG" as RetrievalEvaluation #FDECEC
@@ -81,8 +100,13 @@ package "Versioned configuration" #F4F5F7 {
   artifact "configs/bluesky.default.toml" as BlueskyConfig
   artifact "configs/artwork_filter.default.toml" as FilterConfig
   artifact "configs/artwork_filter.prompts.v1.toml" as PromptConfig
-  artifact "configs/production.default.toml\nobject store + Qdrant serving policy" as ProductionConfig
+  artifact "configs/production.default.toml\nPostgreSQL + object store + Qdrant" as ProductionConfig
+  artifact "configs/model_dashboard.default.toml\nrefresh + health guardrails" as MonitoringConfig
+  artifact "configs/intake_scheduler.default.toml\n10:00 window + 5,000 target" as IntakeConfig
+  artifact "configs/search_api.default.toml\nupload, policy, concurrency, catalog" as SearchApiConfig
 }
+
+database "Neon PostgreSQL\ncanonical catalog + workflow + telemetry + outbox" as CanonicalPostgres #E8F7EE
 
 package "Local private data boundary (Git-ignored)" #FFF8E7 {
   folder "data/raw/\nmanual + routed accepted originals" as RawFiles
@@ -98,6 +122,7 @@ package "Local private data boundary (Git-ignored)" #FFF8E7 {
   database "data/artsearch.db\nSQLite metadata + vectors" as SQLite
   database "data/qdrant/\nrebuildable local serving index" as Qdrant #FFF8E7
   file "data/search_*.html\nlocal result galleries" as HTMLFiles
+  file "data/production/scheduler/*.jsonl\nhost trigger evidence" as SchedulerEvents
 }
 
 Operator --> IngestCLI
@@ -108,6 +133,14 @@ Operator --> FilterCLI
 Operator --> EmbedCLI
 Operator --> RetrievalCLI
 Operator --> QdrantCLI
+Operator --> PostgresCLI
+Operator --> MonitoringCLI
+Operator --> IntakeCLI
+AlphaUser --> CloudflareEdge : HTTPS image search
+CloudflareEdge --> SearchFrontend : cached application shell
+SearchFrontend --> SearchAPI : multipart image + opaque session key
+SearchFrontend --> SearchAPI : Great / Good / Bad result feedback
+WindowsScheduler --> IntakeCLI : run-due
 Operator --> ReviewArtifacts : annotates CSV
 HTMLFiles --> Operator : viewed locally
 
@@ -120,6 +153,12 @@ ArtistConfig ..> ManualIngest
 BlueskyCLI --> BlueskyCollector
 BlueskyCLI --> RosterAudit
 PipelineCLI --> Orchestrator
+IntakeCLI --> IntakeDAG : deterministic daily run ID
+IntakeConfig ..> IntakeCLI
+IntakeDAG --> PipelineCLI : run-authors
+PipelineCLI --> SourcePlanner
+SourcePlanner --> SQLite : actor state + roster position
+IntakeCLI --> SchedulerEvents : start / skip / result
 BlueskyCollector --> BlueskyAPI : paged author-feed reads
 RosterAudit --> BlueskyAPI : metadata-only feed reads
 RosterAudit --> SafePilotConfig : local safe-pilot roster
@@ -158,6 +197,24 @@ PromptConfig ..> ZeroShot
 FilterConfig ..> FilterService
 FilterService --> DecisionJSONL : append-only evidence
 SmokeTest --> ZeroShot
+MonitoringCLI --> HealthSnapshot
+MonitoringCLI --> HumanReview
+HealthSnapshot --> MonitoringUI : sanitized JSON snapshot
+MonitoringUI --> Operator : localhost browser UI
+Operator --> MonitoringUI : labels + useful/not-useful feedback
+MonitoringUI --> HumanReview : token-protected localhost API
+MonitoringConfig ..> HealthSnapshot
+MonitoringConfig ..> HumanReview
+SQLite --> HealthSnapshot : corpus / vectors / runs
+SQLite --> HumanReview : decisions + exact retrieval vectors
+ProcessedFiles --> HumanReview : explicitly revealed media
+HumanReview --> ImageLoader : allowlisted remote fallback
+HumanReview --> ReviewArtifacts : immutable ArtworkLabel events
+HumanReview --> RetrievalArtifacts : immutable ranked judgments
+DecisionJSONL --> HealthSnapshot : outcomes / latency / drift
+ReviewArtifacts --> HealthSnapshot : labeled filter evaluation
+RetrievalArtifacts --> HealthSnapshot : rank judgments + ANN report
+Qdrant --> HealthSnapshot : optional status / point probe
 
 Router --> ImageLoader : full-size load for ACCEPT/REVIEW
 Router --> RawFiles : ACCEPT, metadata-stripped JPEG
@@ -181,26 +238,42 @@ AppConfig ..> ManualIngest
 AppConfig ..> CorpusStore
 AppConfig ..> EmbedPipeline
 AppConfig ..> Retrieval
+ProductionConfig ..> CanonicalPublisher
 ProductionConfig ..> QdrantPublisher
 ProductionConfig ..> Retrieval
 BlueskyConfig ..> BlueskyCollector
 EmbedPipeline --> ProcessedFiles : reads validated images
 EmbedPipeline --> SQLite : reads artworks; upserts embeddings
 EmbedPipeline --> EmbeddingModels
-EmbeddingModels --> HuggingFace : lazy CLIP/DINO checkpoints
-EmbedPipeline --> QdrantPublisher : current global vectors
-SQLite --> QdrantPublisher : safety + demo policy
+EmbeddingModels --> HuggingFace : pinned CLIP + CSD artifacts
+IntakeDAG --> CanonicalPublisher : after object + embedding jobs
+SQLite --> CanonicalPublisher : candidate-scoped staged rows
+CanonicalPublisher --> CanonicalPostgres : atomic upsert + Qdrant events
+PostgresCLI --> CanonicalPublisher
+PostgresCLI --> CanonicalPostgres : Alembic direct connection
+CanonicalPostgres --> QdrantPublisher : SKIP LOCKED events + vectors
+SQLite --> QdrantPublisher : local-only fallback
 QdrantPublisher --> Qdrant : idempotent upsert/prune\nthen alias promotion
+QdrantPublisher --> CanonicalPostgres : settle point + event state
+
+SearchApiConfig ..> SearchAPI
+SearchApiConfig ..> QueryEncoder
+SearchAPI --> QueryEncoder : validated in-memory RGB
+QueryEncoder --> HuggingFace : pinned artifact cache miss only
+SearchAPI --> CloudQdrant : CLIP + CSD prefetch, RRF, top 100
+SearchAPI --> CanonicalPostgres : top-100 candidates + top-10 impressions
+SearchAPI --> SearchFrontend : versioned results + score evidence
+MonitoringCLI --> CanonicalPostgres : aggregate latency, volume,\nfeedback + pipeline metrics
+SearchFrontend --> PublicAssets : result display images
+CloudflareEdge --> PublicAssets : cache miss
 
 RetrievalCLI --> Retrieval
 QdrantCLI --> QdrantPublisher
 QdrantCLI --> Retrieval
 RetrievalCLI --> BlueskyGallery : open-gallery --source bluesky
-Retrieval --> Qdrant : parallel CLIP subject +\nDINO global HNSW retrieval
-Retrieval --> PatchReranker : fused shortlist
-PatchReranker --> SQLite : shortlisted DINO patches only
+Retrieval --> Qdrant : parallel CLIP subject +\nCSD style HNSW retrieval
 Directions --> Retrieval : subject + named-medium axes
-Directions --> Retrieval : optional unnameable pooled facets
+Directions --> Retrieval : optional unnameable style facets
 Retrieval --> Demo
 Demo --> ProcessedFiles : local image references
 Demo --> HTMLFiles
@@ -214,13 +287,18 @@ BlueskyGallery --> BlueskyAPI : browser loads CDN images
 BlueskyGallery --> HTMLFiles
 
 note bottom of SQLite
+  Worker-local staging and offline development.
+  PostgreSQL is canonical when production mode is enabled.
+
   Tables:
   artists, artworks, embeddings,
   runs, run_events,
   artwork_filter_decisions,
   artwork_filter_routes,
   artwork_objects,
-  vector_index_points
+  vector_index_points,
+  bluesky_actor_intake_state,
+  bluesky_roster_intake_state
 end note
 
 note bottom of ReviewArtifacts
@@ -237,6 +315,74 @@ legend right
   |<#FDECEC> | Retrieval embeddings and search |
   |<#FFF8E7> | Local private/generated storage |
 endlegend
+
+@enduml
+
+
+@startuml ArtSearch_Closed_Alpha_Cloud
+title ArtSearch Closed-Alpha Cloud Topology
+
+left to right direction
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam linetype ortho
+skinparam componentStyle rectangle
+skinparam defaultFontName SansSerif
+
+actor "Invited alpha user" as User
+actor "Operator laptop\n(deploy/review only)" as Operator
+
+cloud "Cloudflare edge" #E8F2FF {
+  component "TLS / WAF / rate limit\nstatic and image caching" as EdgePolicy
+  folder "R2 private originals\nand batch artifacts" as R2Private
+  folder "R2 display derivatives" as R2Public
+}
+
+node "Small cloud VM" #E8F7EE {
+  component "FastAPI + public workbench\nsearch coordinator" as API
+  component "Bounded query encoder\npinned CLIP + CSD" as QueryEncoder
+  component "Airflow control plane\nprivate loopback surface" as Airflow
+  component "Qdrant outbox worker\nidempotent publication" as CloudOutbox
+}
+
+cloud "Managed data services" #FFF4D6 {
+  database "Neon PostgreSQL\nmetadata + query events" as Postgres
+  database "Qdrant Cloud\nnamed-vector serving index" as Qdrant
+}
+
+cloud "Ephemeral model compute" #FDECEC {
+  component "Modal batch workers\nSigLIP + CLIP + CSD" as BatchWorker
+}
+
+User --> EdgePolicy : search and feedback over HTTPS
+EdgePolicy --> API : cached frontend + API proxy
+EdgePolicy --> R2Public : display derivatives
+API --> Postgres : queries, top-100 candidates,\ntop-10 impressions + graded feedback
+API --> QueryEncoder : validated in-memory image
+QueryEncoder --> API : version-compatible query vectors
+API --> Qdrant : filtered multi-vector recall
+API --> R2Public : result derivative metadata
+
+Airflow --> BatchWorker : scheduled versioned jobs
+BatchWorker --> R2Private : accepted objects and artifacts
+BatchWorker --> Postgres : canonical workflow + outbox transaction
+Postgres --> CloudOutbox : SKIP LOCKED claims
+CloudOutbox --> Qdrant : validated index publication
+CloudOutbox --> Postgres : point/event settlement
+
+Operator --> Airflow : SSH/authenticated tunnel
+Operator --> Postgres : migrations and restore drills
+Operator --> Qdrant : evaluation and alias promotion
+
+note bottom of Operator
+  The laptop may be powered off without affecting users.
+  It never serves requests or model inference.
+end note
+
+note bottom of API
+  Only public dynamic origin.
+  Airflow and review tooling remain private.
+end note
 
 @enduml
 
@@ -371,7 +517,7 @@ collections "Prior active corpus archive" as Archive
 participant "CorpusRouter" as Router
 participant "ArtworkFilterCorpusStore" as Store
 database "Fresh SQLite + image files" as Corpus
-participant "Pinned CLIP + DINO" as HeavyML
+participant "Pinned CLIP + CSD" as HeavyML
 participant "Retrieval gallery writer" as Gallery
 
 Operator -> CLI : --dry-run
@@ -390,8 +536,8 @@ loop selected candidates in batches
   Store -> Corpus : canonical 448x448 JPEG + SQLite upsert
 end
 CLI -> HeavyML : embed every validated artwork
-HeavyML -> Corpus : CLIP vector + DINO pooled + DINO patches
-CLI -> Gallery : two-stage ensemble gallery,\nsame-artist results enabled
+HeavyML -> Corpus : CLIP subject vector + CSD style vector
+CLI -> Gallery : fused ensemble gallery,\nsame-artist results enabled
 Gallery -> Corpus : read pinned vectors and local images
 Gallery --> Operator : data/search_gallery.html
 
@@ -447,11 +593,10 @@ entity embeddings {
   * artwork_id : TEXT <<PK, FK>>
   --
   clip_vector : BLOB?
-  dino_pooled : BLOB?
-  dino_patches : BLOB?
+  csd_style : BLOB?
   dimensions : INTEGER fields
   CLIP_model_name_version : TEXT
-  DINO_model_name_version : TEXT
+  CSD_model_name_version : TEXT
 }
 
 entity runs {
@@ -523,6 +668,27 @@ entity vector_index_points {
   indexed_at : TEXT
 }
 
+entity bluesky_actor_intake_state {
+  * actor_key : TEXT <<PK>>
+  --
+  actor : TEXT
+  high_water_post_uri : TEXT?
+  pending_high_water_post_uri : TEXT?
+  resume_cursor : TEXT?
+  last_scan_complete : INTEGER
+  last_candidate_count : INTEGER
+  last_error : TEXT?
+  last_attempt_at : TEXT
+}
+
+entity bluesky_roster_intake_state {
+  * roster_key : TEXT <<PK>>
+  --
+  actor_count : INTEGER
+  next_actor_index : INTEGER
+  updated_at : TEXT
+}
+
 artists ||--o{ artworks : owns
 artworks ||--o| embeddings : has
 runs ||--o{ run_events : records
@@ -550,7 +716,73 @@ end note
 
 note bottom of vector_index_points
   Idempotency ledger for the derived Qdrant serving index.
-  Qdrant remains rebuildable from current SQLite vectors and policy.
+  Local Qdrant remains rebuildable from current SQLite vectors and policy.
+end note
+
+@enduml
+
+
+@startuml ArtSearch_PostgreSQL_Control_Plane
+title ArtSearch PostgreSQL Control Plane
+
+left to right direction
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam linetype ortho
+skinparam defaultFontName SansSerif
+
+database "SQLite staging snapshot" as Staging
+component "Verified publisher\nfull cutover or candidate scope" as Publisher
+
+package "catalog" {
+  entity "artists" as PGArtists
+  entity "artworks + artwork_objects" as PGArtworks
+}
+
+package "ml" {
+  entity "model_versions" as PGModels
+  entity "CLIP/CSD halfvec archive" as PGEmbeddings
+  entity "vector_index_points" as PGPoints
+}
+
+package "ingest" {
+  entity "runs + filter evidence + source state" as PGIngest
+  entity "sqlite_imports\nhash/scope/count verification" as PGImports
+  queue "outbox_events\nSKIP LOCKED claims" as PGOutbox
+}
+
+package "product (RLS-ready)" {
+  entity "users + sessions + queries" as PGQueries
+  entity "ranking_runs + retrieval_candidates\n+ impressions" as PGRankings
+  entity "graded relevance + interactions\n+ saves + follows" as PGFeedback
+}
+
+database "Qdrant\nCLIP + CSD named HNSW" as PGQdrant
+cloud "R2/S3\nprivate bytes + artifacts" as PGR2
+
+Staging --> Publisher
+Publisher --> PGArtists
+Publisher --> PGArtworks
+Publisher --> PGEmbeddings
+Publisher --> PGIngest
+Publisher --> PGImports
+Publisher --> PGOutbox : same transaction
+PGArtworks --> PGR2 : object URI + content hash
+PGModels --> PGEmbeddings
+PGOutbox --> PGQdrant : idempotent upsert/delete
+PGQdrant --> PGPoints : settlement after remote success
+PGQueries --> PGRankings
+PGRankings --> PGFeedback
+
+note bottom of PGEmbeddings
+  Compact archival/repair copy only.
+  No PostgreSQL HNSW or IVFFlat index in this release.
+end note
+
+note bottom of PGFeedback
+  Detailed events retain exact query/session,
+  model/index version, scores, rank, and latency.
+  Default retention: 180 days.
 end note
 
 @enduml

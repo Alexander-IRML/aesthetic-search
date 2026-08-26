@@ -11,21 +11,15 @@ from artsearch.ingest.config import ModelConfig
 @dataclass(frozen=True)
 class ImageEmbeddings:
     clip_vector: np.ndarray
-    dino_pooled: np.ndarray
-    dino_patches: np.ndarray
-    dino_patch_grid_size: int
+    csd_style: np.ndarray
 
     @property
     def clip_dim(self) -> int:
         return int(self.clip_vector.shape[0])
 
     @property
-    def dino_pooled_dim(self) -> int:
-        return int(self.dino_pooled.shape[0])
-
-    @property
-    def dino_patch_dim(self) -> int:
-        return int(self.dino_patches.shape[-1])
+    def csd_style_dim(self) -> int:
+        return int(self.csd_style.shape[0])
 
 
 def l2_normalize(values: np.ndarray, *, axis: int | None = None) -> np.ndarray:
@@ -41,9 +35,7 @@ def l2_normalize(values: np.ndarray, *, axis: int | None = None) -> np.ndarray:
 def normalize_embeddings(embeddings: ImageEmbeddings) -> ImageEmbeddings:
     return ImageEmbeddings(
         clip_vector=l2_normalize(embeddings.clip_vector),
-        dino_pooled=l2_normalize(embeddings.dino_pooled),
-        dino_patches=l2_normalize(embeddings.dino_patches, axis=1),
-        dino_patch_grid_size=embeddings.dino_patch_grid_size,
+        csd_style=l2_normalize(embeddings.csd_style),
     )
 
 
@@ -65,8 +57,8 @@ def model_versions_match(row: sqlite3.Row | None, models: ModelConfig) -> bool:
     return (
         row["model_name_clip"] == models.clip_model_name
         and row["model_version_clip"] == models.clip_model_version
-        and row["model_name_dino"] == models.dino_model_name
-        and row["model_version_dino"] == models.dino_model_version
+        and row["model_name_csd"] == models.csd_model_name
+        and row["model_version_csd"] == models.csd_model_version
     )
 
 
@@ -90,45 +82,36 @@ def upsert_embedding(
             artwork_id,
             clip_vector,
             clip_dim,
-            dino_pooled,
-            dino_pooled_dim,
-            dino_patches,
-            dino_patch_grid_size,
-            dino_patch_dim,
+            csd_style,
+            csd_style_dim,
             model_name_clip,
             model_version_clip,
-            model_name_dino,
-            model_version_dino,
+            model_name_csd,
+            model_version_csd,
             date_computed
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(artwork_id) DO UPDATE SET
             clip_vector = excluded.clip_vector,
             clip_dim = excluded.clip_dim,
-            dino_pooled = excluded.dino_pooled,
-            dino_pooled_dim = excluded.dino_pooled_dim,
-            dino_patches = excluded.dino_patches,
-            dino_patch_grid_size = excluded.dino_patch_grid_size,
-            dino_patch_dim = excluded.dino_patch_dim,
+            csd_style = excluded.csd_style,
+            csd_style_dim = excluded.csd_style_dim,
             model_name_clip = excluded.model_name_clip,
             model_version_clip = excluded.model_version_clip,
-            model_name_dino = excluded.model_name_dino,
-            model_version_dino = excluded.model_version_dino,
+            model_name_csd = excluded.model_name_csd,
+            model_version_csd = excluded.model_version_csd,
             date_computed = CURRENT_TIMESTAMP
         """,
         (
             artwork_id,
             array_to_blob(normalized.clip_vector),
             normalized.clip_dim,
-            array_to_blob(normalized.dino_pooled),
-            normalized.dino_pooled_dim,
-            array_to_blob(normalized.dino_patches),
-            normalized.dino_patch_grid_size,
-            normalized.dino_patch_dim,
+            array_to_blob(normalized.csd_style),
+            normalized.csd_style_dim,
             models.clip_model_name,
             models.clip_model_version,
-            models.dino_model_name,
-            models.dino_model_version,
+            models.csd_model_name,
+            models.csd_model_version,
         ),
     )
     conn.commit()

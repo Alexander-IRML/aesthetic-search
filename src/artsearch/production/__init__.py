@@ -5,7 +5,9 @@ from artsearch.production.object_store import (
     LocalObjectStore,
     ObjectRef,
     ObjectStore,
+    ObjectStoreCanaryResult,
     S3ObjectStore,
+    verify_object_store,
 )
 from artsearch.production.publisher import (
     CorpusPublishResult,
@@ -17,10 +19,12 @@ __all__ = [
     "LocalObjectStore",
     "ObjectRef",
     "ObjectStore",
+    "ObjectStoreCanaryResult",
     "ProductionConfig",
     "S3ObjectStore",
     "CorpusPublishResult",
     "candidate_ids_from_jsonl",
     "load_production_config",
     "publish_corpus_originals",
+    "verify_object_store",
 ]

@@ -20,10 +20,11 @@ package "Airflow 3 Control Plane" {
 package "Daily Python Data Plane" {
   component "HTTPX pooled async client\ntimeouts, limits, retries" as HTTPX
   component "SigLIP pipeline\nclassify, route, import" as Pipeline
-  component "CLIP + DINO feature job\nglobal vectors + patch matrices" as Embeddings
-  component "Qdrant publisher\nsafe/demo policy + alias promotion" as QdrantPublisher
+  component "CLIP + CSD feature job\nsubject + style vectors" as Embeddings
+  component "PostgreSQL publisher\nverified scoped upsert + outbox" as PostgresPublisher
+  component "Qdrant outbox worker\nsafe/demo policy + alias promotion" as QdrantPublisher
   component "Polars lazy ETL\nJSONL to Parquet" as Polars
-  component "s3fs object adapter\nimmutable SHA-256 keys" as S3FS
+  component "s3fs object adapter\nbounded PUT/HEAD + SHA-256 keys" as S3FS
 }
 
 package "Corpus-Scale Batch Plane" {
@@ -39,7 +40,8 @@ package "Private Local Working State" {
 }
 
 cloud "S3-compatible durable storage\nAWS S3 / B2 / R2" as S3
-database "Qdrant serving index\nCLIP + DINO named HNSW vectors" as Qdrant
+database "PostgreSQL canonical control plane\ncatalog + workflow + telemetry + outbox" as Postgres
+database "Qdrant serving index\nCLIP + CSD named HNSW vectors" as Qdrant
 
 Operator --> IntakeDAG : trigger / inspect
 Operator --> AuditDAG : trigger / inspect
@@ -53,19 +55,23 @@ Pipeline --> Raw : ACCEPT only
 Pipeline --> SQLite
 IntakeDAG --> Embeddings
 SQLite --> Embeddings : current accepted corpus
-Embeddings --> SQLite : pinned vectors + patches
+Embeddings --> SQLite : pinned subject + style vectors
+IntakeDAG --> PostgresPublisher
+SQLite --> PostgresPublisher : this run's complete staged rows
+PostgresPublisher --> Postgres : transactional canonical upsert + outbox
 IntakeDAG --> QdrantPublisher
-SQLite --> QdrantPublisher : safe + demo-approved vectors
-QdrantPublisher --> Qdrant : idempotent sync + prune
+Postgres --> QdrantPublisher : SKIP LOCKED event claim + vectors
+QdrantPublisher --> Qdrant : idempotent upsert/delete
+QdrantPublisher --> Postgres : point state + event settlement
 IntakeDAG --> Polars
 JSONL --> Polars
 Polars --> LocalParquet
-IntakeDAG --> S3FS
+IntakeDAG --> S3FS : pre-run write/read/delete canary
 Raw --> S3FS : accepted originals
 LocalParquet --> S3FS : immutable data products
 JSONL --> S3FS : immutable run evidence
 S3FS --> S3
-S3FS --> SQLite : checkpoint key, URI, hash
+S3FS --> SQLite : batched single-writer checkpoint
 
 AuditDAG --> Spark
 S3 --> Spark : all corpus manifests via S3A
@@ -83,9 +89,8 @@ note bottom of Spark
 end note
 
 note bottom of Qdrant
-  Derived and rebuildable from SQLite.
-  CLIP and DINO stay separate through ANN recall and RRF.
-  DINO patch MaxSim runs only over the fused shortlist.
+  Derived and rebuildable from PostgreSQL + R2 artifacts.
+  CLIP and CSD stay separate through ANN recall and RRF.
 end note
 
 @enduml

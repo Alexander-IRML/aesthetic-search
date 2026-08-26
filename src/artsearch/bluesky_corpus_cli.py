@@ -44,7 +44,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Replace the active ArtSearch corpus with current artwork-like SigLIP "
-            "decisions, then compute CLIP/DINO embeddings and write the retrieval gallery."
+            "decisions, then compute CLIP/CSD embeddings and write the retrieval gallery."
         )
     )
     parser.add_argument("--candidates", default=DEFAULT_CANDIDATES)
@@ -137,7 +137,7 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
     report["seed"] = seed
 
     if not args.skip_embeddings and seed["imported"] + seed["unchanged"] > 0:
-        print("Computing CLIP and DINO embeddings...", file=sys.stderr, flush=True)
+        print("Computing CLIP and CSD embeddings...", file=sys.stderr, flush=True)
         from artsearch.embed.pipeline import generate_embeddings
 
         report["embeddings"] = generate_embeddings(args.app_config)

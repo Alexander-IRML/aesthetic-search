@@ -75,6 +75,12 @@ def main() -> None:
                 store,
                 namespace=args.namespace,
                 candidate_ids=candidate_ids,
+                upload_concurrency=(
+                    args.upload_concurrency or config.object_store.upload_concurrency
+                ),
+                checkpoint_batch_size=config.object_store.upload_checkpoint_batch_size,
+                max_attempts=config.object_store.upload_max_attempts,
+                retry_base_seconds=config.object_store.upload_retry_base_seconds,
             )
             print(json.dumps(result.to_dict(), sort_keys=True))
             return
@@ -137,6 +143,11 @@ def _build_parser() -> argparse.ArgumentParser:
     corpus.add_argument("--database", default="data/artsearch.db")
     corpus.add_argument("--project-root", default=".")
     corpus.add_argument("--namespace", default="corpus/originals")
+    corpus.add_argument(
+        "--upload-concurrency",
+        type=_positive_int,
+        help="Override the bounded object-store upload worker count.",
+    )
     scope = corpus.add_mutually_exclusive_group()
     scope.add_argument(
         "--candidates",
@@ -151,3 +162,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _add_object_config(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", default=DEFAULT_CONFIG)
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be positive")
+    return parsed

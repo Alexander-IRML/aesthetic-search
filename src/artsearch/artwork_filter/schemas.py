@@ -35,6 +35,7 @@ class ImageCandidate(BaseModel):
     langs: list[str] = Field(default_factory=list)
     content_labels: list[str] = Field(default_factory=list)
     author_labels: list[str] = Field(default_factory=list)
+    source_moderation_passed: bool = False
     is_repost: bool = False
     is_quote_post: bool = False
     quoted_author_did: str | None = None

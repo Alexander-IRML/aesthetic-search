@@ -39,6 +39,21 @@ class FakeImageLoader:
         )
 
 
+class TrackingImageLoader(FakeImageLoader):
+    def __init__(self) -> None:
+        self.active = 0
+        self.max_active = 0
+
+    async def load(self, candidate):
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(0.01)
+            return await super().load(candidate)
+        finally:
+            self.active -= 1
+
+
 def test_router_materializes_accept_and_review_but_not_reject(tmp_path):
     config = load_artwork_filter_config()
     config.storage.review_image_dir = tmp_path / "review"
@@ -63,6 +78,23 @@ def test_router_materializes_accept_and_review_but_not_reject(tmp_path):
     ]
     assert all(item.local_path and item.local_path.exists() for item in routed)
     assert not any(item.candidate_id == "candidate-2" for item in routed)
+
+
+def test_router_bounds_parallel_fullsize_downloads_separately(tmp_path):
+    config = load_artwork_filter_config()
+    config.downloads.fullsize_max_concurrency = 3
+    candidates = [_candidate(f"parallel-{index}") for index in range(8)]
+    results = [
+        _result(candidate.candidate_id, FilterDecision.ACCEPT, "main_art")
+        for candidate in candidates
+    ]
+    loader = TrackingImageLoader()
+    router = CorpusRouter(config, raw_dir=tmp_path / "raw", image_loader=loader)
+
+    routed = asyncio.run(router.route_many(candidates, results))
+
+    assert len(routed) == 8
+    assert loader.max_active == 3
 
 
 def test_corpus_store_persists_evidence_and_idempotent_accepted_artwork(tmp_path):
@@ -141,7 +173,7 @@ def test_corpus_store_invalidates_embedding_when_existing_artwork_changes(tmp_pa
         artwork_id = conn.execute("SELECT artwork_id FROM artworks").fetchone()["artwork_id"]
         conn.execute(
             "INSERT INTO embeddings (artwork_id, model_name_clip, model_version_clip, "
-            "model_name_dino, model_version_dino) VALUES (?, 'clip', 'v1', 'dino', 'v1')",
+            "model_name_csd, model_version_csd) VALUES (?, 'clip', 'v1', 'csd', 'v1')",
             (artwork_id,),
         )
         conn.commit()
@@ -169,6 +201,39 @@ def test_corpus_store_invalidates_embedding_when_existing_artwork_changes(tmp_pa
     assert artwork["file_hash"] == second_route.image_sha256
     assert artwork["validated"] == 1
     assert embedding_count == 0
+
+
+def test_source_moderated_accept_is_safe_and_demo_eligible(tmp_path):
+    app_config = _app_config(tmp_path)
+    filter_config = load_artwork_filter_config()
+    candidate = _candidate("candidate-source-safe").model_copy(
+        update={"source_moderation_passed": True}
+    )
+    result = _result(candidate.candidate_id, FilterDecision.ACCEPT, "main_art")
+    result.config_hash = filter_config.config_hash
+    raw_path = app_config.raw_dir / "source" / "candidate-source-safe.jpg"
+    raw_path.parent.mkdir(parents=True)
+    image = Image.new("RGB", (640, 480), (20, 40, 60))
+    image.save(raw_path)
+    routed = RoutedImage(
+        candidate_id=candidate.candidate_id,
+        target="corpus",
+        status="stored",
+        local_path=raw_path,
+        image_sha256=sha256_bytes(raw_path.read_bytes()),
+        perceptual_hash=str(imagehash.phash(image)),
+        width=640,
+        height=480,
+    )
+
+    ArtworkFilterCorpusStore(app_config, filter_config).persist_batch(
+        [candidate], [result], [routed]
+    )
+
+    with connect(app_config.database_path) as connection:
+        row = connection.execute("SELECT is_sfw, demo_eligible FROM artworks").fetchone()
+    assert row["is_sfw"] == 1
+    assert row["demo_eligible"] == 1
 
 
 def _candidate(candidate_id: str) -> ImageCandidate:
@@ -239,8 +304,12 @@ def _app_config(tmp_path) -> AppConfig:
         models=ModelConfig(
             clip_model_name="clip",
             clip_model_version="v1",
-            dino_model_name="dino",
-            dino_model_version="v1",
+            csd_model_name="csd",
+            csd_model_version="v1",
+            csd_model_filename="model.pt",
+            csd_model_sha256="a" * 64,
+            csd_processor_name="clip-processor",
+            csd_processor_version="v1",
         ),
         embeddings=EmbeddingConfig(batch_size=2, device="cpu"),
         retrieval=RetrievalConfig(
