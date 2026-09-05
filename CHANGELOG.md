@@ -3,6 +3,67 @@
 Project changes worth remembering live here. Keep entries concise and focused on
 what changed, why it matters, and any verification that was done.
 
+## v0.6.0 - 2026-09-05
+
+### Added
+
+- Added CSD preprocessing, tensor-transfer, backbone, projection, and output
+  timings to the API response and public request trace.
+- Added end-to-end search timing from browser and Cloudflare Container startup
+  through upload/decode, telemetry initialization, CLIP, CSD, normalization,
+  Qdrant, and catalog lookup, with an on-page request trace and `Server-Timing`.
+- Added a non-starting runtime-status endpoint and red/green model-state light
+  without a keep-warm poll or any change to the 15-minute idle timeout.
+- Added a post-retrieval RAG assistant backed by Cloudflare Workers AI. It
+  summarizes bounded Bluesky post and alt-text metadata only after the top ten
+  search results have rendered.
+- Added a constrained artist-search agent tool that reruns the original
+  in-memory query image against one displayed artist through an exact Qdrant
+  metadata filter, with the scope recorded in query telemetry.
+
+### Changed
+
+- Moved query telemetry initialization alongside inference, preserving ordered
+  completion and feedback writes while exposing only its residual wait.
+- Raised the single scale-to-zero search Container to 2 vCPU and the required
+  6 GiB memory floor after local CSD profiling measured near-twofold thread
+  scaling; rejected tested dynamic INT8 variants because they changed style
+  embeddings beyond the quality gate.
+- Moved completed-query telemetry writes behind the search response on one
+  ordered worker while preserving search-before-feedback persistence ordering.
+- Removed the shared alpha passcode so the hosted search workbench can serve as
+  a public resume demo.
+- Moved the frontend from the sleeping model Container to Cloudflare static
+  assets, allowing `/search` to load without paying the model cold-start cost.
+- Added edge search, feedback, content-type, and upload-size controls while
+  retaining the one-Container and one-inference cost ceilings.
+- Extended the browser's cold-start wait and surfaced a distinct model-warming
+  state instead of appearing to load indefinitely.
+
+### Safety And Privacy
+
+- Kept query image bytes in memory only and kept private R2 corpus objects
+  behind the same-origin Worker media route.
+- Added per-client and per-location limits for search, feedback, and assistant
+  traffic while preserving the single-container cost ceiling.
+- Kept provider credentials in Cloudflare-managed secrets and ignored local
+  environment files; the release contains no corpus images, databases, model
+  weights, or generated vectors.
+
+### Verified
+
+- `python -m pytest -q`: 245 tests passed and 2 optional tests skipped.
+- Ruff checks, changed-file formatting checks, Worker type generation,
+  TypeScript validation, and the Cloudflare container dry run passed.
+- The live deployment reported one healthy 2-vCPU, 6-GiB container and returned
+  ten results through CLIP, CSD, Qdrant, Neon, and R2.
+- One warm validation request reduced measured edge time from about 5.2 seconds
+  to 2.7 seconds and CSD time from about 3.4 seconds to 1.7 seconds. This is a
+  diagnostic sample, not a production p95 measurement.
+
+See [the detailed v0.6.0 release notes](docs/releases/v0.6.0.md) for the public
+alpha architecture, performance investigation, verification, and known limits.
+
 ## v0.5.0 - 2026-08-26
 
 ### Highlights

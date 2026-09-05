@@ -2,10 +2,10 @@
 
 Data preparation and baseline visual search pipeline for artwork.
 
-Current release: **v0.5.0**. See the
-[v0.5.0 release notes](docs/releases/v0.5.0.md) for the closed-alpha cloud
-search, CLIP/CSD retrieval, PostgreSQL telemetry, and deployment verification
-record.
+Current release: **v0.6.0**. See the
+[v0.6.0 release notes](docs/releases/v0.6.0.md) for the public alpha workbench,
+post-retrieval assistant, detailed latency telemetry, and CSD inference
+optimization record.
 
 The current MVP ingests explicitly registered artist folders from `data/raw/`,
 standardizes images into 448x448 JPEGs in `data/processed/`, tracks metadata in
@@ -80,11 +80,18 @@ and returns a fixed top 10. The upload is not persisted.
 
 ## Cloud Alpha
 
-The closed-alpha query path is deployed as a Cloudflare Worker plus one
-scale-to-zero CPU Container. The Worker owns invite access, private R2 media,
-and origin isolation; the Container owns exact CLIP/CSD query encoding and calls
-Qdrant Cloud plus Neon PostgreSQL. Search traffic does not use the developer
-laptop.
+The public resume demo is deployed as a Cloudflare Worker plus one scale-to-zero
+CPU Container. The Worker serves the frontend at the edge, rate-limits public
+search and feedback requests, and streams approved R2 media; the Container owns
+exact CLIP/CSD query encoding and calls Qdrant Cloud plus Neon PostgreSQL. Only
+an actual API request wakes model compute, and search traffic does not use the
+developer laptop.
+
+After the top ten render, an edge-only Workers AI 1B assistant summarizes their
+bounded Bluesky post and alt-text metadata. A constrained agent tool can rerun
+the same in-memory reference image with an exact artist filter when the user
+names one of the displayed artists. Assistant calls do not wake the model
+Container, receive query pixels, or gain general-purpose tool access.
 
 For a new environment or redeployment, print the account list, copy the cloud
 configuration template, and validate the provider contracts with:
@@ -248,6 +255,11 @@ Public image search persists rolling p50/p95 latency, top-100 ranked candidate
 evidence, top-10 impressions, and Great/Good/Bad relevance feedback. The model
 operations dashboard reports search volume, complete-query Precision@10,
 graded nDCG@10, exact-versus-HNSW Recall@100, and durable pipeline-stage success.
+The public workbench also exposes a warm/cold model light and a last-request
+trace spanning browser, edge startup, CLIP, CSD internals, Qdrant, catalog, and
+residual telemetry latency. Query telemetry initialization overlaps inference.
+The measured CPU profile and rejected quantization experiments are recorded in
+[docs/csd_inference_optimization.md](docs/csd_inference_optimization.md).
 
 Only explicitly `demo_eligible` and SFW artwork enters Qdrant. Accepted Bluesky
 images that passed the configured source-label/text moderation gate now receive

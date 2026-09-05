@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from collections import defaultdict, deque
+from datetime import UTC, datetime
 from importlib.resources import files
 import logging
 from pathlib import Path
@@ -198,6 +199,20 @@ def create_app(
             "index_alias": active.qdrant_config.alias_name,
         }
 
+    @application.get("/api/runtime-status", include_in_schema=False)
+    async def runtime_status(request: Request):
+        active = getattr(request.app.state, "search_service", None)
+        warm = active is not None and active.ready
+        return JSONResponse(
+            {
+                "status": "ready" if warm else "cold",
+                "warm": warm,
+                "container_state": "local_ready" if warm else "local_stopped",
+                "observed_at": datetime.now(UTC).isoformat(),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
     @application.post(
         "/api/search-by-image",
         response_model=ImageSearchResponse,
@@ -214,6 +229,7 @@ def create_app(
         request: Request,
         image: Annotated[UploadFile, File(description="JPEG, PNG, or WebP query image")],
         session_key: Annotated[str, Form(min_length=8, max_length=128)],
+        artist_id: Annotated[str | None, Form(max_length=256)] = None,
     ):
         if not SESSION_KEY.fullmatch(session_key):
             return _error_response(
@@ -235,10 +251,12 @@ def create_app(
                 )
             validated = await read_validated_image(image, settings)
             decode_ms = (time.perf_counter() - decode_started) * 1000.0
+            artist_scope = (artist_id or "").strip() or None
             return await active.search_image(
                 validated.image,
                 client_session_key=session_key,
                 upload_decode_ms=decode_ms,
+                artist_id=artist_scope,
             )
         except UploadTooLargeError as exc:
             return _error_response(request, 413, "upload_too_large", str(exc))

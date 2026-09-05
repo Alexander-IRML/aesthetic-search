@@ -20,6 +20,8 @@ class CatalogArtwork:
     artist_name: str
     image_url: str
     source_url: str | None = None
+    post_text: str | None = None
+    alt_text: str | None = None
 
 
 class ArtworkCatalog(Protocol):
@@ -116,6 +118,8 @@ class PostgresArtworkCatalog:
             select(
                 artworks.c.artwork_id,
                 artworks.c.artist_id,
+                artworks.c.post_text,
+                artworks.c.alt_text,
                 artists.c.display_name,
                 artists.c.source_url,
                 func.coalesce(
@@ -167,6 +171,8 @@ class PostgresArtworkCatalog:
                     object_uri=row["object_uri"],
                 ),
                 source_url=_optional_text(row["source_url"]),
+                post_text=_bounded_metadata_text(row["post_text"]),
+                alt_text=_bounded_metadata_text(row["alt_text"]),
             )
             for row in rows
         }
@@ -197,3 +203,8 @@ def _public_image_url(
 def _optional_text(value: object) -> str | None:
     normalized = str(value or "").strip()
     return normalized or None
+
+
+def _bounded_metadata_text(value: object, *, max_length: int = 700) -> str | None:
+    normalized = " ".join(str(value or "").split())
+    return normalized[:max_length] or None

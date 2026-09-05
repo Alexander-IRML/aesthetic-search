@@ -1,6 +1,6 @@
 # Public Image Search API
 
-Status: deployed closed-alpha vertical slice
+Status: deployed public resume-demo vertical slice
 
 ## Responsibility
 
@@ -15,9 +15,10 @@ changing the frontend contract.
 
 ## Request Path
 
-1. Cloudflare terminates TLS and applies the authoritative WAF and IP rate limit.
-2. `POST /api/search-by-image` accepts one multipart `image` plus an opaque
-   browser `session_key`.
+1. Cloudflare terminates TLS, serves the frontend from edge assets, and applies
+   Worker rate-limit bindings before model compute can start.
+2. `POST /api/search-by-image` accepts one multipart `image`, an opaque browser
+   `session_key`, and an optional stable `artist_id` scope.
 3. The API streams with a hard byte cap, verifies JPEG/PNG/WebP MIME against the
    decoded format, rejects animation and decompression bombs, applies EXIF
    orientation, and converts to RGB in memory.
@@ -27,10 +28,19 @@ changing the frontend contract.
    lists with server-side reciprocal-rank fusion and catalog policy filters. Up
    to 100 fused candidates are retained as reproducible ranking evidence.
 6. The API enriches result IDs from SQLite in development or PostgreSQL in
-   production, converting object keys into CDN URLs.
-7. The API records query, ranking-stage, top-100 candidate, top-10 impression,
-   version, and latency evidence in PostgreSQL when telemetry is enabled.
+   production, converting object keys into CDN URLs and attaching bounded
+   Bluesky post and alt text when available.
+7. The API starts the query telemetry record concurrently with inference, then
+   joins it only when the stable query/session IDs are needed. It queues the
+   ranking-stage, top-100 candidate, top-10 impression, version, and completed
+   timing writes on the same ordered worker after the response is built.
+   Feedback uses that worker so it cannot overtake its search record.
 8. The decoded query and original upload bytes leave scope without being stored.
+9. After the results render, the browser can send only the ten compact result
+   records to the edge-only retrieval assistant for a grounded summary.
+10. If a follow-up names one displayed artist, deterministic agent routing
+    resubmits the same browser-held image with that artist's stable ID. Qdrant
+    applies an exact metadata filter before CLIP/CSD fusion.
 
 Qdrant recommends named-vector prefetch plus top-level RRF for
 [multi-representation hybrid queries](https://qdrant.tech/documentation/search/hybrid-queries/).
@@ -62,6 +72,7 @@ Content-Type: multipart/form-data
 
 image=<jpeg|png|webp>
 session_key=<opaque browser identifier>
+artist_id=<optional stable artist scope>
 ```
 
 The result count is server-controlled and fixed at ten for this version:
@@ -82,6 +93,10 @@ The result count is server-controlled and fixed at ten for this version:
       "image_url": "https://images.example.com/...",
       "source_url": "https://bsky.app/...",
       "content_class": "finished_illustration",
+      "source_metadata": {
+        "post_text": "A finished commission...",
+        "alt_text": "An illustrated character..."
+      },
       "match": {
         "fusion_score": 0.83,
         "subject_score": 0.31,
@@ -102,13 +117,55 @@ The result count is server-controlled and fixed at ten for this version:
   "timing": {
     "upload_decode_ms": 8.1,
     "queue_ms": 0.1,
+    "telemetry_start_ms": 3.2,
+    "telemetry_wait_ms": 0.1,
     "encode_ms": 840.0,
+    "clip_encode_ms": 115.0,
+    "csd_encode_ms": 724.4,
+    "csd_preprocess_ms": 4.0,
+    "csd_tensor_transfer_ms": 0.1,
+    "csd_backbone_ms": 719.5,
+    "csd_projection_ms": 0.4,
+    "csd_output_ms": 0.4,
+    "embedding_normalize_ms": 0.6,
     "vector_search_ms": 14.0,
     "catalog_ms": 4.0,
-    "total_ms": 866.2
+    "total_ms": 869.4
   }
 }
 ```
+
+`encode_ms` is the aggregate encoder wall time. Its CLIP, CSD, and vector
+normalization children make model cost directly attributable; they must not be
+added to `encode_ms` a second time. The five `csd_*` stage values are children
+of `csd_encode_ms`. `telemetry_start_ms` is total database work that normally
+overlaps inference; only `telemetry_wait_ms` was on the critical path. The
+individual timing values therefore do not form one additive waterfall.
+`total_ms` is measured inside the Python API and does not include a
+scale-to-zero Container start or browser transit.
+
+## Warm State And Edge Timing
+
+`GET /api/runtime-status` reports `ready`, `warming`, `cold`, or `unknown`.
+Cloudflare answers this by reading Container state without forwarding a health
+request to the Python process, so checking the light does not start the model.
+The browser checks once at page load rather than polling continuously. A local
+FastAPI run exposes the same contract from its in-process service state.
+
+Container-routed responses include:
+
+- `X-ArtSearch-Container-State`: state observed before starting the request.
+- `X-ArtSearch-Container-Wait-Ms`: time spent obtaining a ready Container.
+- `X-ArtSearch-Container-Fetch-Ms`: time to receive backend response headers.
+- `X-ArtSearch-Edge-Total-Ms`: complete Worker time for the routed request.
+- `Server-Timing`: the same edge phases for browser developer tools.
+
+The public workbench combines those values with browser wall time and API timing
+to show whether a slow request came from cold start, CLIP, the CSD backbone,
+Qdrant, catalog, residual telemetry wait, or network/browser overhead. The
+indicator turns green after
+a successful search and conservatively returns to red before the configured
+15-minute idle shutdown; it does not run a keep-warm loop.
 
 Errors use one stable envelope with a safe message and request ID. The API uses
 400 for malformed images, 413 for size limits, 415 for unsupported media, 429
@@ -135,6 +192,61 @@ completed in the same browser session and that the artwork was one of its
 displayed impressions. Events are immutable; when a grade changes, evaluation
 uses the newest event for that query and artwork.
 
+## Post-Retrieval Assistant
+
+The assistant is deliberately downstream of retrieval. The top ten display
+without waiting for generation, then the browser sends a compact copy of those
+result records to the Worker:
+
+```http
+POST /api/retrieval-assistant
+Content-Type: application/json
+
+{
+  "mode": "summary",
+  "message": null,
+  "query_id": "019...",
+  "results": [
+    {
+      "artwork_id": "...",
+      "artist_id": "...",
+      "artist_name": "Artist Name",
+      "rank": 1,
+      "content_class": "finished_illustration",
+      "source_metadata": {
+        "post_text": "...",
+        "alt_text": "..."
+      }
+    }
+  ]
+}
+```
+
+Cloudflare Workers AI runs `@cf/meta/llama-3.2-1b-instruct` with a short,
+low-temperature prompt. Metadata is treated as untrusted data, field and body
+sizes are capped, and the model is told explicitly that it has not inspected
+the pixels. A model failure returns a deterministic metadata summary and does
+not affect retrieval.
+
+For follow-ups, `mode` is `message`. Code outside the model recognizes an
+unambiguous displayed artist plus search intent and returns one typed action:
+
+```json
+{
+  "route": "tool",
+  "action": {
+    "type": "artist_search",
+    "artist_id": "bsky_artist_...",
+    "artist_name": "Artist Name"
+  }
+}
+```
+
+The browser executes that action by resubmitting its original in-memory image
+to `/api/search-by-image` with `artist_id`. The language model has no Qdrant
+credential, no image bytes, no network tool, and no authority to construct an
+arbitrary filter. The scoped query is recorded in PostgreSQL telemetry.
+
 ## Runtime Limits
 
 Defaults live in `configs/search_api.default.toml`:
@@ -143,8 +255,12 @@ Defaults live in `configs/search_api.default.toml`:
 - JPEG, PNG, and WebP only; single-frame only.
 - One CPU inference owner and a two-second admission queue.
 - 120-second local model deadline.
-- Twelve searches per source IP per minute as defense in depth.
-- 120 feedback writes per source IP per minute.
+- Four searches per source IP and eight searches per Cloudflare edge location
+  per minute before Container wake.
+- Sixty feedback writes per source IP per minute at the edge.
+- Twelve assistant requests per source IP and 24 per edge location per minute.
+- Twelve searches and 120 feedback writes per source IP per minute in the
+  Container as defense in depth.
 - Ten results, at most two from one artist through the Qdrant policy.
 
 Only Cloudflare's trusted `CF-Connecting-IP` is used when
@@ -164,24 +280,29 @@ docker compose --profile search up -d api
 Open `http://127.0.0.1:8000/search`. The local catalog exposes approved processed
 images only through `/api/artworks/{artwork_id}/image`; user input never selects
 a path. API documentation is at `/api/docs`, liveness at `/health/live`, and
-model/index readiness at `/health/ready`.
+model/index readiness at `/health/ready`. The same page exposes its latest
+request trace and reads local warm state from `/api/runtime-status`.
+
+The retrieval assistant is a Cloudflare Worker route rather than a FastAPI
+route. Direct local FastAPI runs retain image search but show the assistant as
+offline unless the frontend is served through local Wrangler development.
 
 ## Hosted Deployment
 
 The alpha deployment uses a Cloudflare Worker in front of one scale-to-zero
-Cloudflare Container. The Worker enforces a signed invite session before waking
-the paid Container, serves approved media through a read-only R2 binding, and
-keeps Qdrant and PostgreSQL credentials inside managed runtime secrets. The
-Container bakes the pinned model weights and starts with Hugging Face network
-access disabled.
+Cloudflare Container. The Worker serves the public frontend without waking the
+Container, rate-limits API requests, serves approved media through a read-only
+R2 binding, and keeps Qdrant and PostgreSQL credentials inside managed runtime
+secrets. The Container bakes the pinned model weights and starts with Hugging
+Face network access disabled.
 
 Before traffic expands beyond the trusted alpha:
 
 1. Add provider spend alerts and an external edge-health monitor.
 2. Add an artist report/opt-out and cross-store removal procedure.
-3. Replace the shared invite code with per-user identity when individual
-   revocation becomes necessary.
-4. Apply authoritative edge login and upload rate-limit rules.
+3. Add per-user identity only if individual revocation or private features
+   become necessary.
+4. Revisit edge throttles and add bot verification if public traffic grows.
 5. Benchmark p50/p95 encode and total latency with one and several concurrent
    alpha users before increasing the inference concurrency.
 6. Verify that PostgreSQL query rows, ranked candidates, result impressions,

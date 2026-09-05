@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
+import time
 from typing import Protocol, Sequence
 
 import numpy as np
@@ -9,6 +11,17 @@ from PIL import Image
 from artsearch.embed.csd import CSDStyleEncoder
 from artsearch.embed.storage import ImageEmbeddings
 from artsearch.ingest.config import AppConfig
+
+
+@dataclass(frozen=True)
+class EmbeddingBatchTiming:
+    clip_ms: float
+    csd_ms: float
+    csd_preprocess_ms: float
+    csd_tensor_transfer_ms: float
+    csd_backbone_ms: float
+    csd_projection_ms: float
+    csd_output_ms: float
 
 
 class EmbeddingProvider(Protocol):
@@ -54,19 +67,49 @@ class HuggingFaceEmbeddingProvider:
     def embed_pil_images(self, images: Sequence[Image.Image]) -> list[ImageEmbeddings]:
         """Encode already-decoded RGB images without writing query uploads to disk."""
 
-        if not images:
-            return []
-        with self._torch.inference_mode():
-            clip_vectors = self._embed_clip(images)
-            csd_style = self.csd_encoder.encode(images)
+        values, _ = self.embed_pil_images_timed(images)
+        return values
 
-        return [
-            ImageEmbeddings(
-                clip_vector=clip_vectors[index],
-                csd_style=csd_style[index],
+    def embed_pil_images_timed(
+        self,
+        images: Sequence[Image.Image],
+    ) -> tuple[list[ImageEmbeddings], EmbeddingBatchTiming]:
+        """Encode one batch and expose model-level latency without changing vectors."""
+
+        if not images:
+            return [], EmbeddingBatchTiming(
+                clip_ms=0.0,
+                csd_ms=0.0,
+                csd_preprocess_ms=0.0,
+                csd_tensor_transfer_ms=0.0,
+                csd_backbone_ms=0.0,
+                csd_projection_ms=0.0,
+                csd_output_ms=0.0,
             )
-            for index in range(len(images))
-        ]
+        with self._torch.inference_mode():
+            clip_started = time.perf_counter()
+            clip_vectors = self._embed_clip(images)
+            clip_ms = _elapsed_ms(clip_started)
+        csd_style, csd_timing = self.csd_encoder.encode_timed(images)
+
+        return (
+            [
+                ImageEmbeddings(
+                    clip_vector=clip_vectors[index],
+                    csd_style=csd_style[index],
+                )
+                for index in range(len(images))
+            ],
+            EmbeddingBatchTiming(
+                clip_ms=clip_ms,
+                csd_ms=csd_timing.total_ms,
+                csd_preprocess_ms=csd_timing.preprocess_ms,
+                csd_tensor_transfer_ms=csd_timing.tensor_transfer_ms,
+                csd_backbone_ms=csd_timing.backbone_ms,
+                csd_projection_ms=csd_timing.projection_ms,
+                csd_output_ms=csd_timing.output_ms,
+            ),
+        )
 
     def embed_texts(self, texts: Sequence[str]) -> np.ndarray:
         if not texts:
@@ -120,3 +163,7 @@ def _from_pretrained_cache_first(loader, model_name: str, *, revision: str):
         return loader(model_name, revision=revision, local_files_only=True)
     except OSError:
         return loader(model_name, revision=revision)
+
+
+def _elapsed_ms(started: float) -> float:
+    return (time.perf_counter() - started) * 1000.0

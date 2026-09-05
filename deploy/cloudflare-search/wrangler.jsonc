@@ -13,13 +13,61 @@
   },
   "secrets": {
     "required": [
-      "ALPHA_ACCESS_CODE",
-      "ALPHA_SESSION_KEY",
       "DATABASE_URL",
       "QDRANT_API_KEY",
       "QDRANT_URL"
     ]
   },
+  "assets": {
+    "directory": "../../src/artsearch/api/static",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  "ratelimits": [
+    {
+      "name": "SEARCH_RATE_LIMITER",
+      "namespace_id": "50010",
+      "simple": {
+        "limit": 4,
+        "period": 60
+      }
+    },
+    {
+      "name": "SEARCH_LOCATION_RATE_LIMITER",
+      "namespace_id": "50011",
+      "simple": {
+        "limit": 8,
+        "period": 60
+      }
+    },
+    {
+      "name": "FEEDBACK_RATE_LIMITER",
+      "namespace_id": "50012",
+      "simple": {
+        "limit": 60,
+        "period": 60
+      }
+    },
+    {
+      "name": "ASSISTANT_RATE_LIMITER",
+      "namespace_id": "50013",
+      "simple": {
+        "limit": 12,
+        "period": 60
+      }
+    },
+    {
+      "name": "ASSISTANT_LOCATION_RATE_LIMITER",
+      "namespace_id": "50014",
+      "simple": {
+        "limit": 24,
+        "period": 60
+      }
+    }
+  ],
   "vars": {
     "ARTSEARCH_MEDIA_PREFIX": "artsearch/corpus/"
   },
@@ -37,8 +85,8 @@
       "image_build_context": "../..",
       "max_instances": 1,
       "instance_type": {
-        "vcpu": 1,
-        "memory_mib": 4096,
+        "vcpu": 2,
+        "memory_mib": 6144,
         "disk_mb": 8000
       },
       "constraints": {

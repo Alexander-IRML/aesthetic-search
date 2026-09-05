@@ -1,41 +1,52 @@
 # Cloudflare Search Deployment
 
-This package deploys the public ArtSearch frontend and image-search API as one
-scale-to-zero Cloudflare Container behind a small Worker. The Worker also
-streams accepted corpus objects from a read-only R2 binding at `/media/`.
+This package deploys the public ArtSearch resume demo. A Cloudflare Worker
+serves the static search workbench from edge assets, applies request limits,
+streams approved corpus objects from a read-only R2 binding at `/media/`, and
+wakes one scale-to-zero Container only for image-search and feedback API
+requests. A post-retrieval assistant runs separately at the edge through the
+native Workers AI binding.
 
-The container image bakes the exact pinned CLIP and CSD artifacts during its
+The Container image bakes the exact pinned CLIP and CSD artifacts during its
 Docker build. Runtime starts are offline with respect to Hugging Face and use
 the same model revisions and vector dimensions as the Qdrant collection.
 
 ## Runtime Shape
 
-- One named container instance, capped at one active instance.
-- 1 vCPU, 4 GiB memory, and 8 GB ephemeral disk.
+- Public, anonymous frontend served from Cloudflare static assets.
+- One named Container instance, capped at one active instance.
+- One model inference owner inside the Python service.
+- 2 vCPU, 6 GiB memory, and 8 GB ephemeral disk.
 - Western North America placement, aligned with the alpha Qdrant cluster.
 - Fifteen-minute idle timeout, then scale to zero.
 - Extended three-minute model startup allowance.
-- Read-only R2 binding for accepted corpus media.
+- Read-only R2 binding for approved corpus media.
 - Outbound TLS to managed PostgreSQL and Qdrant Cloud.
-- Worker observability enabled at full sampling for the closed alpha.
+- Four searches per client IP and eight searches per edge location per minute.
+- Sixty feedback events per client IP per minute.
+- Twelve assistant calls per client IP and 24 per edge location per minute.
+- Cloudflare Workers AI `@cf/meta/llama-3.2-1b-instruct` for metadata-grounded
+  summaries after results render.
 
-One instance is intentional for the first five testers. The Python service owns
-one inference queue, so adding random replicas before measuring demand would
-increase cold starts and model memory without improving ranking quality.
+The edge-served frontend stays responsive while the model Container sleeps. A
+first search after an idle period can still take about a minute while CLIP and
+CSD load. One Container is intentional for the small public demo: it bounds
+compute while the system gathers real latency and relevance evidence.
+Assistant requests never wake that Container and use no additional API secret.
+The workbench checks Container state once on load, shows a red/green warm-state
+light, and displays browser, edge, Container-start, API, CLIP, detailed CSD,
+Qdrant, catalog, and telemetry timing after each search. It does not poll or
+send keep-warm traffic.
 
 ## Prerequisites
 
-1. Docker is running and can build `linux/amd64` images.
+1. Docker can build `linux/amd64` images.
 2. Node.js 20 or newer is installed.
-3. The Cloudflare account is on Workers Paid, which is required for Containers.
-4. The R2 bucket `artsearch-artifacts-alpha` exists and contains published
-   objects beneath `artsearch/corpus/`.
+3. The Cloudflare account is on Workers Paid, which Containers require.
+4. The R2 bucket `artsearch-artifacts-alpha` contains approved objects beneath
+   `artsearch/corpus/`.
 5. The Qdrant `artworks_active` alias and PostgreSQL catalog contain the same
    eligible artwork set.
-
-Create the managed PostgreSQL project in a western US region as well. Moving a
-few browser milliseconds to the edge is less important than avoiding a
-cross-country hop between the query container, catalog, and vector database.
 
 ## Configure
 
@@ -44,19 +55,23 @@ From this directory:
 ```bash
 npm ci
 npx wrangler login
-npm run access:init
 node --env-file=../alpha/.env scripts/put-secrets.mjs
 npm run check
 ```
 
-The secret helper sends values over Wrangler standard input and prints only
-their names. It requires `ALPHA_ACCESS_CODE`, `ALPHA_SESSION_KEY`,
-`DATABASE_URL`, `QDRANT_URL`, and `QDRANT_API_KEY` in the ignored
-`deploy/alpha/.env` file. `npm run access:init` creates the two alpha values
-without printing them and leaves existing values unchanged.
+The helper sends `DATABASE_URL`, `QDRANT_URL`, and `QDRANT_API_KEY` to Wrangler
+over standard input and prints only their names. Those values live in the
+ignored `deploy/alpha/.env` file. The Worker does not use a browser passcode or
+session-signing secret.
 
 For local Worker development, copy `.dev.vars.example` to `.dev.vars` and fill
 it with disposable development credentials. `.dev.vars` is ignored by Git.
+
+The `AI` binding is declared in `wrangler.jsonc`; Cloudflare supplies it at
+runtime. The assistant receives at most ten result records with capped post and
+alt text. It does not receive the uploaded image. Artist follow-ups are routed
+by deterministic code to the existing image-search API, not by granting the
+language model arbitrary tools.
 
 ## Deploy And Verify
 
@@ -66,47 +81,37 @@ npx wrangler containers list
 npx wrangler containers images list
 ```
 
-The first deployment builds and uploads the large CPU model image and can take
-several minutes. After Cloudflare finishes provisioning, verify:
+Verify the edge before waking the model:
 
 ```bash
 curl -fsS https://artsearch-alpha-search.<workers-subdomain>.workers.dev/health/edge
+curl -fsS https://artsearch-alpha-search.<workers-subdomain>.workers.dev/api/runtime-status
+curl -fsS -o /dev/null -w '%{http_code} %{time_total}\n' \
+  https://artsearch-alpha-search.<workers-subdomain>.workers.dev/search
 ```
 
-Then open `/search`, enter the access code stored locally in
-`deploy/alpha/.env`, check `/health/ready` in that authenticated browser
-session, and upload one ordinary test image. A cold request may take noticeably
-longer; subsequent requests should reuse the warm model until the fifteen-minute
-idle timeout.
+`/search` should return immediately without credentials. Upload one ordinary
+test image next, then confirm `/health/ready` while the Container is warm. A
+cold query is expected to be slower than later requests.
 
-## Protect The Closed Alpha
+For an edge/backend split, inspect a search response with `curl -D -` or browser
+developer tools. `X-ArtSearch-Container-Wait-Ms`,
+`X-ArtSearch-Container-Fetch-Ms`, `X-ArtSearch-Edge-Total-Ms`, and
+`Server-Timing` distinguish startup from backend inference. The JSON response
+then separates CLIP, CSD preprocessing/backbone/projection/output,
+normalization, Qdrant, catalog, and telemetry time inside the Python service.
+Telemetry initialization overlaps model inference; `telemetry_wait_ms` is the
+small residual that remained on the response's critical path.
 
-Use the generated `workers.dev` hostname for the first release; a custom domain
-is optional. The Worker-level alpha gate protects the frontend, API, readiness
-probe, and R2 media route before paid container work begins. Only
-`/health/edge` remains public. A successful code entry creates a signed,
-HttpOnly, Secure, same-site cookie that expires after twelve hours.
+## Public Demo Boundaries
 
-Share only the raw `ALPHA_ACCESS_CODE`, never the environment file or session
-signing key. Rotate access by changing both alpha values in the ignored file,
-rerunning the secret helper, and deploying the Worker.
+The generated `workers.dev` hostname is a public URL suitable for a resume. It
+is not private or unfindable. Cost and abuse controls come from the one-Container
+ceiling, one-at-a-time inference, edge rate limits, upload validation, and the
+idle shutdown. Provider budget alerts should still remain enabled.
 
-Cloudflare Access can be added later as defense in depth or to replace the
-shared code with per-tester identity:
-
-1. In **Workers & Pages**, open `artsearch-alpha-search`, then open **Access**.
-2. Select **Protect this Worker behind Access** and protect **All traffic**.
-3. Enable Cloudflare's **One-time PIN** identity provider.
-4. Create one Allow policy whose Include rules list the exact tester email
-   addresses. Include the operator's email as well.
-5. Use a short alpha session duration, then verify one allowed address and one
-   address that is not on the list.
-
-Do not create an Allow rule using `Login Methods = One-time PIN`. That selector
-accepts every email address that can complete an OTP challenge; it is not an
-invite list. Worker-level Access protects the `workers.dev` URL, preview URLs,
-and any later custom domain attached to this Worker.
-
-Do not put `DATABASE_DIRECT_URL`, R2 S3 write credentials, Bluesky credentials,
-or local corpus files in Worker secrets. The query deployment does not need
-them.
+The Worker exposes only the frontend, approved R2 media, health endpoints, API
+documentation, image search, result feedback, and the bounded retrieval
+assistant. Unknown routes return at the edge without waking the Container. Do
+not put `DATABASE_DIRECT_URL`, R2 S3 write credentials, Bluesky credentials,
+local corpus files, or model tokens in Worker secrets.

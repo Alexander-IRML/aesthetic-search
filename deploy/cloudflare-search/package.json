@@ -1,13 +1,12 @@
 {
   "name": "artsearch-cloudflare-search",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "access:init": "node scripts/ensure-alpha-access.mjs",
     "check": "npm run types && tsc --noEmit",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",

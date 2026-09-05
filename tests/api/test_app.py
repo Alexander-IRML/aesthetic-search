@@ -16,6 +16,7 @@ from artsearch.api.schemas import (
     ImageSearchResponse,
     MatchEvidence,
     ModelContract,
+    ResultSourceMetadata,
     SearchTiming,
 )
 from artsearch.api.telemetry import FeedbackTelemetryReceipt
@@ -42,10 +43,19 @@ class _Service:
         self.model_bundle = "b" * 64
         self.qdrant_config = QdrantConfig(enabled=True, alias_name="artworks_active")
         self.catalog = _Catalog(image_path)
+        self.artist_id = None
 
-    async def search_image(self, image, *, client_session_key, upload_decode_ms):
+    async def search_image(
+        self,
+        image,
+        *,
+        client_session_key,
+        upload_decode_ms,
+        artist_id=None,
+    ):
         assert image.mode == "RGB"
         assert client_session_key == "test-session-1234"
+        self.artist_id = artist_id
         return ImageSearchResponse(
             api_version="1.0.0",
             query_id="query-1234",
@@ -59,6 +69,10 @@ class _Service:
                     rank=1,
                     image_url="/api/artworks/art-1/image",
                     content_class="finished_illustration",
+                    source_metadata=ResultSourceMetadata(
+                        post_text="A finished commission",
+                        alt_text="A character illustration",
+                    ),
                     match=MatchEvidence(subject_score=0.8, style_score=0.7),
                 )
             ],
@@ -73,7 +87,17 @@ class _Service:
             timing=SearchTiming(
                 upload_decode_ms=upload_decode_ms,
                 queue_ms=0,
+                telemetry_start_ms=0.5,
+                telemetry_wait_ms=0.1,
                 encode_ms=2,
+                clip_encode_ms=0.5,
+                csd_encode_ms=1.4,
+                csd_preprocess_ms=0.1,
+                csd_tensor_transfer_ms=0.1,
+                csd_backbone_ms=1.0,
+                csd_projection_ms=0.1,
+                csd_output_ms=0.1,
+                embedding_normalize_ms=0.1,
                 vector_search_ms=1,
                 catalog_ms=1,
                 total_ms=5,
@@ -98,7 +122,14 @@ class _Service:
 
 
 class _BrokenService(_Service):
-    async def search_image(self, image, *, client_session_key, upload_decode_ms):
+    async def search_image(
+        self,
+        image,
+        *,
+        client_session_key,
+        upload_decode_ms,
+        artist_id=None,
+    ):
         raise ValueError("private implementation detail")
 
 
@@ -112,25 +143,60 @@ def test_upload_frontend_and_search_contract(tmp_path: Path) -> None:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             frontend = await client.get("/search")
+            runtime_status = await client.get("/api/runtime-status")
             response = await client.post(
                 "/api/search-by-image",
                 files={"image": ("query.png", _image_bytes(), "image/png")},
                 data={"session_key": "test-session-1234"},
             )
             image_response = await client.get("/api/artworks/art-1/image")
-        return frontend, response, image_response
+        return frontend, runtime_status, response, image_response
 
-    frontend, response, image_response = asyncio.run(scenario())
+    frontend, runtime_status, response, image_response = asyncio.run(scenario())
 
     assert frontend.status_code == 200
     assert "Drop an artwork here" in frontend.text
     assert 'data-grade="great"' in frontend.text
+    assert "Retrieval assistant" in frontend.text
+    assert "Request trace" in frontend.text
+    assert "BACKEND CHECKING" in frontend.text
+    assert runtime_status.status_code == 200
+    assert runtime_status.json()["warm"] is True
+    assert runtime_status.headers["cache-control"] == "no-store"
     assert response.status_code == 200
     assert response.json()["results"][0]["artist_name"] == "Artist One"
+    assert response.json()["results"][0]["source_metadata"] == {
+        "post_text": "A finished commission",
+        "alt_text": "A character illustration",
+    }
     assert response.json()["result_count"] == 1
+    assert response.json()["timing"]["csd_encode_ms"] == 1.4
+    assert response.json()["timing"]["csd_backbone_ms"] == 1.0
     assert response.headers["x-content-type-options"] == "nosniff"
     assert image_response.status_code == 200
     assert image_response.headers["content-type"] == "image/jpeg"
+
+
+def test_search_accepts_a_stable_artist_scope() -> None:
+    service = _Service()
+    app = create_app(api_config=SearchApiConfig(telemetry_enabled=False), service=service)
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.post(
+                "/api/search-by-image",
+                files={"image": ("query.png", _image_bytes(), "image/png")},
+                data={
+                    "session_key": "test-session-1234",
+                    "artist_id": "bsky_artist_123",
+                },
+            )
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 200
+    assert service.artist_id == "bsky_artist_123"
 
 
 def test_result_feedback_records_a_graded_relevance_event() -> None:
@@ -231,17 +297,24 @@ def test_frontend_preview_serves_ui_without_search_dependencies() -> None:
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             frontend = await client.get("/search")
             readiness = await client.get("/health/ready")
+            runtime_status = await client.get("/api/runtime-status")
             search = await client.post(
                 "/api/search-by-image",
                 files={"image": ("query.png", _image_bytes(), "image/png")},
                 data={"session_key": "test-session-1234"},
             )
-        return frontend, readiness, search
+        return frontend, readiness, runtime_status, search
 
-    frontend, readiness, search = asyncio.run(scenario())
+    frontend, readiness, runtime_status, search = asyncio.run(scenario())
 
     assert frontend.status_code == 200
     assert readiness.status_code == 503
+    assert runtime_status.json() == {
+        "status": "cold",
+        "warm": False,
+        "container_state": "local_stopped",
+        "observed_at": runtime_status.json()["observed_at"],
+    }
     assert search.status_code == 503
     assert search.json()["error"]["code"] == "service_starting"
 

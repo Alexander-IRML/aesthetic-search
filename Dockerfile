@@ -98,6 +98,6 @@ RUN python -m artsearch.api.model_cache --config config/config.yaml
 ENV HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \
     TOKENIZERS_PARALLELISM=false \
-    OMP_NUM_THREADS=1 \
-    MKL_NUM_THREADS=1
+    OMP_NUM_THREADS=2 \
+    MKL_NUM_THREADS=2
 CMD ["artsearch-api", "--app-config", "config/config.yaml", "--production-config", "configs/production.cloudflare.toml", "--api-config", "configs/search_api.cloudflare.toml", "--host", "0.0.0.0", "--port", "8000"]

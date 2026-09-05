@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from dataclasses import dataclass
 import hashlib
 import math
 from pathlib import Path
+import time
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -13,6 +15,18 @@ from artsearch.ingest.config import ModelConfig
 
 
 CSD_STYLE_DIMENSION = 768
+
+
+@dataclass(frozen=True)
+class CSDEncodingTiming:
+    """Wall-clock stages for one CSD batch; all values are milliseconds."""
+
+    preprocess_ms: float
+    tensor_transfer_ms: float
+    backbone_ms: float
+    projection_ms: float
+    output_ms: float
+    total_ms: float
 
 
 class CSDStyleEncoder:
@@ -71,14 +85,48 @@ class CSDStyleEncoder:
         self.style_projection = self.style_projection.to(device)
 
     def encode(self, images: Sequence[Image.Image]) -> np.ndarray:
+        vectors, _ = self.encode_timed(images)
+        return vectors
+
+    def encode_timed(
+        self,
+        images: Sequence[Image.Image],
+    ) -> tuple[np.ndarray, CSDEncodingTiming]:
+        """Encode images and expose the CPU-serving stages that dominate latency."""
+
+        total_started = time.perf_counter()
         if not images:
-            return np.empty((0, CSD_STYLE_DIMENSION), dtype=np.float32)
+            return (
+                np.empty((0, CSD_STYLE_DIMENSION), dtype=np.float32),
+                CSDEncodingTiming(
+                    preprocess_ms=0.0,
+                    tensor_transfer_ms=0.0,
+                    backbone_ms=0.0,
+                    projection_ms=0.0,
+                    output_ms=0.0,
+                    total_ms=0.0,
+                ),
+            )
+
+        preprocess_started = time.perf_counter()
         inputs = self.processor(images=list(images), return_tensors="pt")
+        preprocess_ms = _elapsed_ms(preprocess_started)
+
+        transfer_started = time.perf_counter()
         pixel_values = inputs["pixel_values"].to(device=self.device, dtype=self.dtype)
+        tensor_transfer_ms = _elapsed_ms(transfer_started)
+
         with self._torch.inference_mode():
+            backbone_started = time.perf_counter()
             features = self.model(pixel_values)
+            backbone_ms = _elapsed_ms(backbone_started)
+
+            projection_started = time.perf_counter()
             style = features @ self.style_projection
             style = self._torch.nn.functional.normalize(style, dim=1, p=2)
+            projection_ms = _elapsed_ms(projection_started)
+
+        output_started = time.perf_counter()
         vectors = style.detach().cpu().float().numpy().astype(np.float32)
         if vectors.ndim != 2 or vectors.shape[1] != CSD_STYLE_DIMENSION:
             raise RuntimeError(
@@ -90,7 +138,18 @@ class CSDStyleEncoder:
         norms = np.linalg.norm(vectors, axis=1)
         if np.any(norms == 0):
             raise RuntimeError("CSD produced a zero-length style embedding")
-        return vectors
+        output_ms = _elapsed_ms(output_started)
+        return (
+            vectors,
+            CSDEncodingTiming(
+                preprocess_ms=preprocess_ms,
+                tensor_transfer_ms=tensor_transfer_ms,
+                backbone_ms=backbone_ms,
+                projection_ms=projection_ms,
+                output_ms=output_ms,
+                total_ms=_elapsed_ms(total_started),
+            ),
+        )
 
 
 def _split_state_dict(state: Mapping[str, Any]) -> tuple[dict[str, Any], Any]:
@@ -255,3 +314,7 @@ def _sha256_file(path: Path) -> str:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _elapsed_ms(started: float) -> float:
+    return (time.perf_counter() - started) * 1000.0

@@ -1,7 +1,21 @@
 import numpy as np
 import pytest
 
-from artsearch.embed.csd import _pinned_hf_file, _sha256_file, _split_state_dict
+from artsearch.embed.csd import CSDStyleEncoder, _pinned_hf_file, _sha256_file, _split_state_dict
+
+
+def test_empty_csd_batch_has_zero_stage_timings() -> None:
+    encoder = CSDStyleEncoder.__new__(CSDStyleEncoder)
+
+    vectors, timing = encoder.encode_timed([])
+
+    assert vectors.shape == (0, 768)
+    assert timing.preprocess_ms == 0
+    assert timing.tensor_transfer_ms == 0
+    assert timing.backbone_ms == 0
+    assert timing.projection_ms == 0
+    assert timing.output_ms == 0
+    assert timing.total_ms == 0
 
 
 def test_split_state_dict_extracts_backbone_and_style_head() -> None:

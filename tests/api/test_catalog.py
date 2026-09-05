@@ -48,5 +48,7 @@ def test_sqlite_catalog_returns_controlled_image_route(tmp_path: Path) -> None:
 
     assert record.artist_name == "Artist Name"
     assert record.image_url == "/api/artworks/art/image"
+    assert record.post_text is None
+    assert record.alt_text is None
     assert catalog.local_image_path("art") == image_path
     assert catalog.local_image_path("missing") is None

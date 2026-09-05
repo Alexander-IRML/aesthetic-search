@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aesthetic-search"
-version = "0.5.0"
+version = "0.6.0"
 description = "Data preparation pipeline for ArtSearch visual similarity search."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -83,6 +83,7 @@ artsearch-intake = "artsearch.production.scheduler:main"
 artsearch-deploy = "artsearch.deployment.cli:main"
 artsearch-postgres = "artsearch.postgres.cli:main"
 artsearch-api = "artsearch.api.cli:main"
+artsearch-csd-benchmark = "artsearch.embed.csd_benchmark:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/artsearch"]

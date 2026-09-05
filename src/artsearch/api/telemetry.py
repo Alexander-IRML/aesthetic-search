@@ -40,6 +40,7 @@ class SearchTelemetry(Protocol):
         client_session_key: str,
         model_bundle_version: str,
         index_version: str,
+        artist_id: str | None = None,
     ) -> QueryTelemetryContext: ...
 
     def complete(
@@ -83,6 +84,7 @@ class NoopSearchTelemetry:
         client_session_key: str,
         model_bundle_version: str,
         index_version: str,
+        artist_id: str | None = None,
     ) -> QueryTelemetryContext:
         return QueryTelemetryContext(
             query_id=uuid7(),
@@ -136,6 +138,7 @@ class PostgresSearchTelemetry:
         client_session_key: str,
         model_bundle_version: str,
         index_version: str,
+        artist_id: str | None = None,
     ) -> QueryTelemetryContext:
         session_id = self.repository.resolve_session(
             client_session_key,
@@ -144,6 +147,7 @@ class PostgresSearchTelemetry:
         query = QueryStart(
             session_id=session_id,
             query_modality="image",
+            filters={"artist_id": artist_id} if artist_id else {},
             model_bundle_version=model_bundle_version,
             index_version=index_version,
             retrieval_weights={"clip_subject": 1.0, "csd_style": 1.0, "fusion": "rrf"},

@@ -2,8 +2,6 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const secretNames = [
-  "ALPHA_ACCESS_CODE",
-  "ALPHA_SESSION_KEY",
   "DATABASE_URL",
   "QDRANT_API_KEY",
   "QDRANT_URL"

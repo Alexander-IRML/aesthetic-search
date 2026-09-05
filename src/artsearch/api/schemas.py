@@ -16,6 +16,13 @@ class MatchEvidence(BaseModel):
     style_rank: int | None = Field(default=None, gt=0)
 
 
+class ResultSourceMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    post_text: str | None = Field(default=None, max_length=700)
+    alt_text: str | None = Field(default=None, max_length=700)
+
+
 class ArtworkSearchResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -26,6 +33,7 @@ class ArtworkSearchResult(BaseModel):
     image_url: str
     source_url: str | None = None
     content_class: str = "unknown"
+    source_metadata: ResultSourceMetadata = Field(default_factory=ResultSourceMetadata)
     match: MatchEvidence
 
 
@@ -34,7 +42,17 @@ class SearchTiming(BaseModel):
 
     upload_decode_ms: float = Field(ge=0)
     queue_ms: float = Field(ge=0)
+    telemetry_start_ms: float = Field(ge=0)
+    telemetry_wait_ms: float = Field(ge=0)
     encode_ms: float = Field(ge=0)
+    clip_encode_ms: float = Field(ge=0)
+    csd_encode_ms: float = Field(ge=0)
+    csd_preprocess_ms: float = Field(ge=0)
+    csd_tensor_transfer_ms: float = Field(ge=0)
+    csd_backbone_ms: float = Field(ge=0)
+    csd_projection_ms: float = Field(ge=0)
+    csd_output_ms: float = Field(ge=0)
+    embedding_normalize_ms: float = Field(ge=0)
     vector_search_ms: float = Field(ge=0)
     catalog_ms: float = Field(ge=0)
     total_ms: float = Field(ge=0)

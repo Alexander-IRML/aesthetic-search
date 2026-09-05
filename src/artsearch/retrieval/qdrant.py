@@ -492,6 +492,7 @@ class QdrantSearchService:
             style,
             exclude_artwork_id=artwork_id,
             exclude_artist_id=(None if include_query_artist else str(row["artist_id"])),
+            include_artist_id=None,
         )
         return _apply_artist_diversity(hits, top_k, self.config.max_results_per_artist)
 
@@ -541,6 +542,7 @@ class QdrantSearchService:
         style_vector: np.ndarray,
         *,
         top_k: int = 10,
+        artist_id: str | None = None,
     ) -> list[QdrantSearchHit]:
         """Fuse an external image's version-compatible CLIP and CSD vectors."""
 
@@ -553,8 +555,10 @@ class QdrantSearchService:
             style,
             exclude_artwork_id=None,
             exclude_artist_id=None,
+            include_artist_id=artist_id,
         )
-        return _apply_artist_diversity(hits, top_k, self.config.max_results_per_artist)
+        max_per_artist = top_k if artist_id is not None else self.config.max_results_per_artist
+        return _apply_artist_diversity(hits, top_k, max_per_artist)
 
     def _search_fused(
         self,
@@ -563,12 +567,14 @@ class QdrantSearchService:
         *,
         exclude_artwork_id: str | None,
         exclude_artist_id: str | None,
+        include_artist_id: str | None,
     ) -> list[QdrantSearchHit]:
         _, qmodels = _qdrant_imports()
         query_filter = _search_filter(
             qmodels,
             exclude_artwork_id=exclude_artwork_id,
             exclude_artist_id=exclude_artist_id,
+            include_artist_id=include_artist_id,
         )
         params = qmodels.SearchParams(hnsw_ef=self.config.hnsw_ef)
         clip_prefetch = qmodels.Prefetch(
@@ -991,6 +997,7 @@ def _search_filter(
     *,
     exclude_artwork_id: str | None = None,
     exclude_artist_id: str | None = None,
+    include_artist_id: str | None = None,
 ) -> Any:
     must = [
         qmodels.FieldCondition(
@@ -1002,6 +1009,13 @@ def _search_filter(
             match=qmodels.MatchValue(value="safe"),
         ),
     ]
+    if include_artist_id is not None:
+        must.append(
+            qmodels.FieldCondition(
+                key="artist_id",
+                match=qmodels.MatchValue(value=include_artist_id),
+            )
+        )
     must_not = []
     if exclude_artwork_id is not None:
         must_not.append(

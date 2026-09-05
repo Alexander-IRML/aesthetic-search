@@ -14,9 +14,8 @@ not claim to contain the future ArtSearch query API.
 5. Run the canary preflight from the project environment.
 
 The same ignored `.env` also holds the public search deployment's managed
-database, Qdrant, and generated alpha-access secrets. Generate the access values
-without printing them by running `npm run access:init` from
-`deploy/cloudflare-search/`.
+database and Qdrant credentials. The public Worker receives only those runtime
+secrets; no browser access code is required.
 
 ```bash
 .venv/bin/artsearch-deploy preflight \

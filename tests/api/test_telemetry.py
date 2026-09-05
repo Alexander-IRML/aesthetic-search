@@ -11,6 +11,14 @@ class _Repository:
         self.candidates = []
         self.impressions = []
         self.completed: dict[str, object] = {}
+        self.started = None
+
+    def resolve_session(self, client_session_key, *, client_metadata):
+        assert client_metadata == {"surface": "public_search"}
+        return uuid.UUID("01911111-1111-7111-8111-111111111111")
+
+    def start_query(self, query) -> None:
+        self.started = query
 
     def record_ranking_stage(self, query_id, stage) -> None:
         return None
@@ -52,6 +60,21 @@ def test_postgres_telemetry_separates_ranked_candidates_from_impressions() -> No
     assert repository.impressions[-1].result_rank == 10
     assert repository.completed["candidate_count"] == 20
     assert repository.completed["result_count"] == 10
+
+
+def test_postgres_telemetry_records_artist_scoped_agent_search() -> None:
+    repository = _Repository()
+    telemetry = PostgresSearchTelemetry(repository)  # type: ignore[arg-type]
+
+    context = telemetry.start(
+        client_session_key="browser-session-1234",
+        model_bundle_version="bundle-v1",
+        index_version="index-v1",
+        artist_id="artist-7",
+    )
+
+    assert context.session_id == uuid.UUID("01911111-1111-7111-8111-111111111111")
+    assert repository.started.filters == {"artist_id": "artist-7"}
 
 
 def test_postgres_telemetry_returns_feedback_rank_receipt() -> None:

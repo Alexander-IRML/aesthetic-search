@@ -266,6 +266,15 @@ def test_search_fuses_clip_and_csd_and_limits_artists(
         assert all(hit.clip_score is not None for hit in upload_hits)
         assert all(hit.style_score is not None for hit in upload_hits)
 
+        artist_hits = service.search_by_vectors(
+            np.array([1.0, 0.0]),
+            np.array([1.0, 0.0]),
+            top_k=3,
+            artist_id="artist-b",
+        )
+        assert len(artist_hits) == 2
+        assert all(hit.artist_id == "artist-b" for hit in artist_hits)
+
         evaluation = evaluate_qdrant_ann(
             connection,
             app,

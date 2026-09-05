@@ -14,9 +14,16 @@
       <span class="brand-mark">AS</span>
       <span>ARTSEARCH / SIGNAL DESK</span>
     </a>
-    <div class="system-state" aria-label="Search mode">
+    <div
+      id="backend-state"
+      class="system-state"
+      data-state="checking"
+      role="status"
+      aria-live="polite"
+    >
       <span class="state-light" aria-hidden="true"></span>
-      CLIP SUBJECT + CSD STYLE
+      <span id="backend-state-label">BACKEND CHECKING</span>
+      <span class="system-mode">CLIP + CSD</span>
     </div>
   </header>
 
@@ -66,7 +73,7 @@
           <span class="signal-track"><span class="signal-fill style-fill"></span></span>
           <span>CSD</span>
         </div>
-        <p>Rankings are combined with reciprocal-rank fusion. Query images are decoded in memory and not retained.</p>
+        <p>Rankings are combined with reciprocal-rank fusion. Query images are decoded in memory and not retained. The first search after an idle period may take about a minute while the model wakes.</p>
       </section>
     </section>
 
@@ -75,6 +82,70 @@
         <h2 id="results-heading">Results</h2>
         <span id="result-count">00 / 10</span>
       </div>
+
+      <section id="latency-panel" class="latency-trace" aria-labelledby="latency-heading" hidden>
+        <div class="latency-heading">
+          <div>
+            <span class="latency-kicker">OBSERVABILITY / LAST SEARCH</span>
+            <h3 id="latency-heading">Request trace</h3>
+          </div>
+          <span id="request-start-state">STATE --</span>
+        </div>
+        <dl class="latency-grid">
+          <div><dt>Browser round trip</dt><dd data-timing="browser_total_ms">--</dd></div>
+          <div><dt>Edge total</dt><dd data-timing="edge_total_ms">--</dd></div>
+          <div><dt>Container wait</dt><dd data-timing="container_wait_ms">--</dd></div>
+          <div><dt>Backend response</dt><dd data-timing="container_fetch_ms">--</dd></div>
+          <div><dt>Network + browser</dt><dd data-timing="network_browser_ms">--</dd></div>
+          <div><dt>API critical path</dt><dd data-timing="api_total_ms">--</dd></div>
+          <div><dt>Upload + decode</dt><dd data-timing="upload_decode_ms">--</dd></div>
+          <div><dt>Inference queue</dt><dd data-timing="queue_ms">--</dd></div>
+          <div><dt>Telemetry DB work</dt><dd data-timing="telemetry_start_ms">--</dd></div>
+          <div><dt>Telemetry wait</dt><dd data-timing="telemetry_wait_ms">--</dd></div>
+          <div><dt>CLIP subject</dt><dd data-timing="clip_encode_ms">--</dd></div>
+          <div><dt>CSD style</dt><dd data-timing="csd_encode_ms">--</dd></div>
+          <div><dt>CSD preprocess</dt><dd data-timing="csd_preprocess_ms">--</dd></div>
+          <div><dt>CSD tensor transfer</dt><dd data-timing="csd_tensor_transfer_ms">--</dd></div>
+          <div><dt>CSD backbone</dt><dd data-timing="csd_backbone_ms">--</dd></div>
+          <div><dt>CSD projection</dt><dd data-timing="csd_projection_ms">--</dd></div>
+          <div><dt>CSD output</dt><dd data-timing="csd_output_ms">--</dd></div>
+          <div><dt>Normalize</dt><dd data-timing="embedding_normalize_ms">--</dd></div>
+          <div><dt>Qdrant search</dt><dd data-timing="vector_search_ms">--</dd></div>
+          <div><dt>Catalog lookup</dt><dd data-timing="catalog_ms">--</dd></div>
+        </dl>
+      </section>
+
+      <section
+        id="assistant-panel"
+        class="retrieval-assistant"
+        aria-labelledby="assistant-heading"
+        hidden
+      >
+        <div class="assistant-heading">
+          <div>
+            <span class="assistant-kicker">RAG / 1B</span>
+            <h3 id="assistant-heading">Retrieval assistant</h3>
+          </div>
+          <span id="assistant-state">GROUNDED RESULTS</span>
+        </div>
+        <div
+          id="assistant-transcript"
+          class="assistant-transcript"
+          aria-live="polite"
+        ></div>
+        <form id="assistant-form" class="assistant-form">
+          <label class="visually-hidden" for="assistant-input">Ask about these results</label>
+          <input
+            id="assistant-input"
+            type="text"
+            maxlength="500"
+            autocomplete="off"
+            placeholder="Ask about these results or request more from an artist"
+          >
+          <button id="assistant-send" type="submit">Send</button>
+        </form>
+        <p class="assistant-note">Reads returned Bluesky metadata only. It does not inspect query pixels.</p>
+      </section>
 
       <div id="error-state" class="message-state error-state" role="alert" hidden>
         <strong id="error-title">Search unavailable</strong>
