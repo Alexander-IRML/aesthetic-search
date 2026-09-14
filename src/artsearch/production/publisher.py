@@ -33,6 +33,8 @@ class CorpusPublishResult:
     objects_per_second: float = 0.0
     mib_per_second: float = 0.0
     errors: tuple[str, ...] = ()
+    source: str = "raw"
+    role: str = "original"
 
     def to_dict(self) -> dict[str, object]:
         payload = asdict(self)
@@ -60,12 +62,46 @@ def publish_corpus_originals(
     max_attempts: int = 4,
     retry_base_seconds: float = 0.5,
 ) -> CorpusPublishResult:
-    """Publish accepted originals and checkpoint immutable object references in SQLite."""
+    """Compatibility wrapper for the alpha's original-image publication contract."""
+
+    return publish_corpus_images(
+        database_path,
+        project_root,
+        store,
+        source="raw",
+        role="original",
+        namespace=namespace,
+        candidate_ids=candidate_ids,
+        upload_concurrency=upload_concurrency,
+        checkpoint_batch_size=checkpoint_batch_size,
+        max_attempts=max_attempts,
+        retry_base_seconds=retry_base_seconds,
+    )
+
+
+def publish_corpus_images(
+    database_path: str | Path,
+    project_root: str | Path,
+    store: ObjectStore,
+    *,
+    source: Literal["raw", "processed"] = "processed",
+    role: Literal["original", "display"] = "display",
+    namespace: str = "corpus/display",
+    candidate_ids: Collection[str] | None = None,
+    upload_concurrency: int = 1,
+    checkpoint_batch_size: int = 256,
+    max_attempts: int = 4,
+    retry_base_seconds: float = 0.5,
+) -> CorpusPublishResult:
+    """Publish one durable corpus rendition and checkpoint its immutable reference."""
 
     if upload_concurrency <= 0 or checkpoint_batch_size <= 0 or max_attempts <= 0:
         raise ValueError("publication concurrency, checkpoint size, and attempts must be positive")
     if retry_base_seconds < 0:
         raise ValueError("publication retry delay must be non-negative")
+    expected_role = "original" if source == "raw" else "display"
+    if role != expected_role:
+        raise ValueError("raw publication requires original role; processed requires display role")
     started = perf_counter()
     root = Path(project_root).resolve()
     counters = {
@@ -79,7 +115,7 @@ def publish_corpus_originals(
     errors: list[str] = []
     with connect(database_path) as connection:
         init_db(connection)
-        rows = _eligible_rows(connection, candidate_ids)
+        rows = _eligible_rows(connection, candidate_ids, source=source, role=role)
     counters["eligible"] = len(rows)
     worker_count = min(upload_concurrency, len(rows)) if rows else upload_concurrency
     with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="object-publish") as pool:
@@ -92,6 +128,7 @@ def publish_corpus_originals(
                         root=root,
                         store=store,
                         namespace=namespace,
+                        source=source,
                         max_attempts=max_attempts,
                         retry_base_seconds=retry_base_seconds,
                     ),
@@ -105,7 +142,12 @@ def publish_corpus_originals(
                         init_db(connection)
                         for outcome in publishable:
                             assert outcome.ref is not None
-                            _upsert_object_ref(connection, outcome.artwork_id, outcome.ref)
+                            _upsert_object_ref(
+                                connection,
+                                outcome.artwork_id,
+                                outcome.ref,
+                                role=role,
+                            )
                         connection.commit()
                 except sqlite3.DatabaseError as exc:
                     detail = str(exc).replace(str(root), "<project>")
@@ -144,6 +186,8 @@ def publish_corpus_originals(
         objects_per_second=round(completed / duration, 3),
         mib_per_second=round(bytes_uploaded / (1024 * 1024) / duration, 3),
         errors=tuple(errors),
+        source=source,
+        role=role,
     )
 
 
@@ -153,32 +197,33 @@ def _publish_row(
     root: Path,
     store: ObjectStore,
     namespace: str,
+    source: Literal["raw", "processed"],
     max_attempts: int,
     retry_base_seconds: float,
 ) -> _PublishOutcome:
     artwork_id = str(row["artwork_id"])
-    expected_hash = str(row["file_hash"])
-    source = _resolve_local_path(root, str(row["raw_path"]))
-    if not source.is_file():
+    expected_hash = row["expected_sha256"]
+    source_path = _resolve_local_path(root, str(row["source_path"]))
+    if not source_path.is_file():
         return _PublishOutcome(
             artwork_id,
             "missing",
-            error=f"{artwork_id}: local accepted original is missing",
+            error=f"{artwork_id}: local accepted {source} image is missing",
         )
     try:
-        actual_hash, _ = file_identity(source)
-        if actual_hash != expected_hash:
-            raise ValueError("local original hash differs from SQLite")
-        key = content_addressed_key(namespace, expected_hash, suffix=source.suffix.lower())
+        actual_hash, _ = file_identity(source_path)
+        if expected_hash is not None and actual_hash != str(expected_hash):
+            raise ValueError(f"local {source} hash differs from SQLite")
+        key = content_addressed_key(namespace, actual_hash, suffix=source_path.suffix.lower())
     except (OSError, RuntimeError, ValueError) as exc:
         return _failed_outcome(artwork_id, exc, root)
 
     for attempt in range(max_attempts):
         try:
-            if row["published_sha256"] == expected_hash and row["published_object_key"]:
+            if row["published_sha256"] == actual_hash and row["published_object_key"]:
                 if store.exists(str(row["published_object_key"])):
                     return _PublishOutcome(artwork_id, "unchanged")
-            ref = store.put_file(source, key, expected_sha256=expected_hash)
+            ref = store.put_file(source_path, key, expected_sha256=actual_hash)
             return _PublishOutcome(artwork_id, "published", ref=ref)
         except ObjectCollisionError as exc:
             return _failed_outcome(artwork_id, exc, root)
@@ -225,20 +270,27 @@ def candidate_ids_from_jsonl(
 def _eligible_rows(
     connection: sqlite3.Connection,
     candidate_ids: Collection[str] | None,
+    *,
+    source: Literal["raw", "processed"],
+    role: Literal["original", "display"],
 ) -> list[sqlite3.Row]:
-    query = """
-            SELECT a.artwork_id, a.raw_path, a.file_hash,
+    path_column = "raw_path" if source == "raw" else "processed_path"
+    expected_hash = "a.file_hash" if source == "raw" else "NULL"
+    query = f"""
+            SELECT a.artwork_id, a.{path_column} AS source_path,
+                   {expected_hash} AS expected_sha256,
                    o.content_sha256 AS published_sha256,
                    o.object_key AS published_object_key
               FROM artworks AS a
               LEFT JOIN artwork_objects AS o
-                ON o.artwork_id = a.artwork_id AND o.role = 'original'
+                ON o.artwork_id = a.artwork_id AND o.role = ?
              WHERE a.validated = 1
                AND a.source_platform = 'bluesky'
-               AND a.file_hash IS NOT NULL
+               AND a.{path_column} IS NOT NULL
+               {"AND a.file_hash IS NOT NULL" if source == "raw" else ""}
     """
     if candidate_ids is None:
-        return connection.execute(f"{query} ORDER BY a.artwork_id").fetchall()
+        return connection.execute(f"{query} ORDER BY a.artwork_id", (role,)).fetchall()
     unique_ids = sorted(set(candidate_ids))
     rows: list[sqlite3.Row] = []
     for offset in range(0, len(unique_ids), 500):
@@ -260,7 +312,7 @@ def _eligible_rows(
                    )
                  ORDER BY a.artwork_id
                 """,
-                batch,
+                (*batch, role),
             ).fetchall()
         )
     return rows
@@ -280,13 +332,15 @@ def _upsert_object_ref(
     connection: sqlite3.Connection,
     artwork_id: str,
     ref: ObjectRef,
+    *,
+    role: Literal["original", "display"],
 ) -> None:
     connection.execute(
         """
         INSERT INTO artwork_objects (
             artwork_id, role, object_key, object_uri, content_sha256,
             byte_size, etag
-        ) VALUES (?, 'original', ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(artwork_id, role) DO UPDATE SET
             object_key = excluded.object_key,
             object_uri = excluded.object_uri,
@@ -298,6 +352,7 @@ def _upsert_object_ref(
         """,
         (
             artwork_id,
+            role,
             ref.key,
             ref.uri,
             ref.sha256,

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 
-MANIFEST_VERSION = "artsearch-corpus-manifest-v1"
+MANIFEST_VERSION = "artsearch-corpus-manifest-v2"
 METRICS_VERSION = "artsearch-intake-metrics-v1"
 
 
@@ -73,14 +73,22 @@ def build_corpus_manifest(
             error_count=0,
         )
 
+    candidate_scan = pl.scan_ndjson(candidates_source, infer_schema_length=10_000)
+    candidate_schema = candidate_scan.collect_schema()
+    blob_cid = (
+        pl.col("blob_cid")
+        if "blob_cid" in candidate_schema
+        else pl.lit(None, dtype=pl.String)
+    )
     candidates = (
-        pl.scan_ndjson(candidates_source, infer_schema_length=10_000)
+        candidate_scan
         .select(
             "candidate_id",
             "author_did",
             "author_handle",
             "post_uri",
             "post_cid",
+            blob_cid.alias("blob_cid"),
             "image_index",
             "thumbnail_url",
             "fullsize_url",
@@ -304,10 +312,11 @@ def _load_object_mapping(
     schema = {
         "candidate_id": pl.String,
         "artwork_id": pl.String,
+        "object_role": pl.String,
         "object_store_key": pl.String,
         "object_store_uri": pl.String,
-        "original_sha256": pl.String,
-        "original_byte_size": pl.Int64,
+        "object_sha256": pl.String,
+        "object_byte_size": pl.Int64,
         "object_etag": pl.String,
         "object_published_at": pl.String,
     }
@@ -351,17 +360,31 @@ def _load_object_mapping(
                         ON direct.source_platform = 'bluesky'
                        AND direct.source_id = q.candidate_id
                 )
+                , ranked_object AS (
+                    SELECT o.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY o.artwork_id
+                               ORDER BY CASE o.role
+                                   WHEN 'thumbnail' THEN 0
+                                   WHEN 'display' THEN 1
+                                   ELSE 2
+                               END
+                           ) AS object_rank
+                      FROM artwork_objects AS o
+                     WHERE o.role IN ('thumbnail', 'display', 'original')
+                )
                 SELECT ca.candidate_id,
                        o.artwork_id,
+                       o.role AS object_role,
                        o.object_key AS object_store_key,
                        o.object_uri AS object_store_uri,
-                       o.content_sha256 AS original_sha256,
-                       o.byte_size AS original_byte_size,
+                       o.content_sha256 AS object_sha256,
+                       o.byte_size AS object_byte_size,
                        o.etag AS object_etag,
                        o.published_at AS object_published_at
                   FROM candidate_artwork AS ca
-                  JOIN artwork_objects AS o ON o.artwork_id = ca.artwork_id
-                 WHERE o.role = 'original'
+                  JOIN ranked_object AS o
+                    ON o.artwork_id = ca.artwork_id AND o.object_rank = 1
             """
             rows.extend(dict(row) for row in connection.execute(query, batch))
     finally:
@@ -376,6 +399,7 @@ def _write_empty_manifest(pl: Any, output: Path, *, built_at: str) -> None:
         "author_handle": pl.String,
         "post_uri": pl.String,
         "post_cid": pl.String,
+        "blob_cid": pl.String,
         "image_index": pl.Int64,
         "thumbnail_url": pl.String,
         "fullsize_url": pl.String,
@@ -403,10 +427,11 @@ def _write_empty_manifest(pl: Any, output: Path, *, built_at: str) -> None:
         "processed_at": pl.String,
         "error_type": pl.String,
         "artwork_id": pl.String,
+        "object_role": pl.String,
         "object_store_key": pl.String,
         "object_store_uri": pl.String,
-        "original_sha256": pl.String,
-        "original_byte_size": pl.Int64,
+        "object_sha256": pl.String,
+        "object_byte_size": pl.Int64,
         "object_etag": pl.String,
         "object_published_at": pl.String,
         "manifest_version": pl.String,

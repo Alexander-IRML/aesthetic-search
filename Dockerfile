@@ -11,10 +11,13 @@ ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 RUN python -m venv "${VIRTUAL_ENV}"
 WORKDIR /build
+COPY .python-version /tmp/artsearch-python-version
 COPY constraints/runtime-py312.txt /tmp/runtime-py312.txt
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
-RUN pip install --constraint /tmp/runtime-py312.txt ".[api,data,postgres,qdrant]" \
+RUN test "$(python -c 'import platform; print(platform.python_version())')" = \
+        "$(tr -d '[:space:]' < /tmp/artsearch-python-version)" \
+    && pip install --constraint /tmp/runtime-py312.txt ".[api,data,postgres,qdrant,scale]" \
     && pip check
 
 
@@ -37,7 +40,7 @@ RUN pip install --constraint /tmp/runtime-py312.txt ".[dev]" \
 
 FROM ${PYTHON_IMAGE} AS runtime-base
 
-ARG APP_VERSION=0.3.2
+ARG APP_VERSION=0.7.0
 LABEL org.opencontainers.image.title="ArtSearch" \
       org.opencontainers.image.description="ArtSearch control and ML runtime" \
       org.opencontainers.image.version="${APP_VERSION}" \
@@ -90,11 +93,38 @@ COPY --chown=artsearch:artsearch . /opt/artsearch
 CMD ["pytest", "-q"]
 
 
-FROM ml AS cloudflare-search
+FROM runtime-base AS cloudflare-search
 
-# Container disks are ephemeral. Resolve and validate pinned model artifacts at
-# image-build time so a cold start never depends on Hugging Face availability.
-RUN python -m artsearch.api.model_cache --config config/config.yaml
+# Keep the public serving image independent of offline data and FAISS tooling.
+# Installing directly into the final stage also preserves bounded package layers
+# instead of collapsing the complete ML venv into one oversized registry upload.
+USER root
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+RUN python -m venv "${VIRTUAL_ENV}"
+WORKDIR /build
+COPY .python-version /tmp/artsearch-python-version
+COPY constraints/runtime-py312.txt /tmp/runtime-py312.txt
+COPY pyproject.toml README.md LICENSE ./
+COPY src ./src
+RUN test "$(python -c 'import platform; print(platform.python_version())')" = \
+        "$(tr -d '[:space:]' < /tmp/artsearch-python-version)" \
+    && pip install --constraint /tmp/runtime-py312.txt ".[api,postgres,qdrant]" \
+    && pip check
+RUN pip install \
+        --index-url https://download.pytorch.org/whl/cpu \
+        --constraint /tmp/runtime-py312.txt \
+        "torch==2.13.0" \
+        "torchvision==0.28.0"
+RUN pip install --constraint /tmp/runtime-py312.txt ".[embed,filter]" \
+    && pip check
+
+# Container disks are ephemeral. Cache each pinned encoder in a separate OCI
+# layer so cold starts remain offline and registry transfers remain resumable.
+WORKDIR /opt/artsearch
+USER artsearch
+RUN python -m artsearch.api.model_cache --config config/config.yaml --component clip
+RUN python -m artsearch.api.model_cache --config config/config.yaml --component csd
 ENV HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \
     TOKENIZERS_PARALLELISM=false \

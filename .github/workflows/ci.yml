@@ -1,0 +1,195 @@
+name: CI
+
+"on":
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python quality and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      HF_HUB_OFFLINE: "1"
+      PYTHONHASHSEED: "0"
+      TOKENIZERS_PARALLELISM: "false"
+      TRANSFORMERS_OFFLINE: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: ".python-version"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints/runtime-py312.txt
+
+      - name: Install control-plane dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            --constraint constraints/runtime-py312.txt \
+            ".[dev,data,scale]"
+
+      - name: Install CPU model dependencies
+        run: |
+          python -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            --constraint constraints/runtime-py312.txt \
+            "torch==2.13.0" \
+            "torchvision==0.28.0"
+          python -m pip install \
+            --constraint constraints/runtime-py312.txt \
+            ".[embed,filter]"
+
+      - name: Verify release metadata
+        shell: bash
+        run: |
+          args=()
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            args+=(--tag "${GITHUB_REF_NAME}")
+          fi
+          python scripts/check_release_version.py "${args[@]}"
+
+      - name: Guard private artifacts
+        shell: bash
+        run: |
+          tracked="$(git ls-files | grep -E '(^data/|(^|/)\.env$|(^|/)\.dev\.vars$|\.(pem|key|p12|pfx|jks|sqlite|sqlite3|npy|npz|joblib|safetensors|pt|pth|onnx)$)' || true)"
+          if [[ -n "${tracked}" ]]; then
+            printf 'Private or generated artifacts are tracked:\n%s\n' "${tracked}" >&2
+            exit 1
+          fi
+
+      - name: Check dependencies
+        run: python -m pip check
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Compile Python sources
+        run: python -m compileall -q src tests scripts
+
+      - name: Run test suite
+        run: pytest -q
+
+  postgres-migrations:
+    name: PostgreSQL migration smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.6-pg17-bookworm
+        env:
+          POSTGRES_DB: artsearch
+          POSTGRES_USER: artsearch
+          POSTGRES_PASSWORD: artsearch-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U artsearch -d artsearch"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_DIRECT_URL: postgresql://artsearch:artsearch-ci-only@127.0.0.1:5432/artsearch
+      DATABASE_URL: postgresql://artsearch:artsearch-ci-only@127.0.0.1:5432/artsearch
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: ".python-version"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints/runtime-py312.txt
+
+      - name: Install migration dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            --constraint constraints/runtime-py312.txt \
+            ".[postgres]"
+
+      - name: Upgrade a clean database
+        run: artsearch-postgres --config configs/production.docker.toml upgrade
+
+      - name: Verify idempotent upgrade and connectivity
+        run: |
+          artsearch-postgres --config configs/production.docker.toml upgrade
+          artsearch-postgres --config configs/production.docker.toml status --direct
+
+  worker:
+    name: Cloudflare Worker contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: deploy/cloudflare-search
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: deploy/cloudflare-search/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Generate bindings and type-check
+        run: npm run check
+
+      - name: Verify generated bindings are current
+        run: git diff --exit-code -- worker-configuration.d.ts
+
+      - name: Bundle without deploying
+        run: >-
+          npx wrangler deploy
+          --dry-run
+          --containers-rollout=none
+          --outdir /tmp/artsearch-worker-bundle
+
+  compose:
+    name: Container configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Validate local Compose stack
+        run: docker compose -f compose.yaml config --quiet
+
+      - name: Validate alpha control-plane stack
+        run: docker compose -f deploy/alpha/compose.yaml config --quiet
+
+      - name: Validate Airflow development stack
+        run: docker compose -f orchestration/airflow/compose.yaml config --quiet

@@ -8,6 +8,7 @@ import uuid
 from sqlalchemy import Engine, and_, case, delete, func, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from artsearch.postgres.ids import uuid7
 from artsearch.postgres.schema import (
@@ -37,7 +38,7 @@ class QueryStart:
     positive_artwork_ids: tuple[str, ...] = ()
     negative_artwork_ids: tuple[str, ...] = ()
     filters: dict[str, object] = field(default_factory=dict)
-    retrieval_weights: dict[str, float] = field(default_factory=dict)
+    retrieval_weights: dict[str, object] = field(default_factory=dict)
     model_bundle_version: str | None = None
     index_version: str | None = None
 
@@ -175,23 +176,21 @@ class TelemetryRepository:
         if not client_session_key.strip():
             raise ValueError("client_session_key must not be empty")
         session_id = uuid7()
-        statement = (
-            postgresql_insert(sessions)
-            .values(
-                session_id=session_id,
-                user_id=user_id,
-                client_session_key=client_session_key,
-                client_metadata=client_metadata or {},
-            )
-            .on_conflict_do_update(
-                index_elements=[sessions.c.client_session_key],
-                set_={
-                    "last_seen_at": func.now(),
-                    "client_metadata": client_metadata or {},
-                },
-            )
-            .returning(sessions.c.session_id)
+        insert_statement = postgresql_insert(sessions).values(
+            session_id=session_id,
+            user_id=user_id,
+            client_session_key=client_session_key,
+            client_metadata=client_metadata or {},
         )
+        statement = insert_statement.on_conflict_do_update(
+            index_elements=[sessions.c.client_session_key],
+            set_={
+                "last_seen_at": func.now(),
+                "client_metadata": sessions.c.client_metadata.op("||")(
+                    insert_statement.excluded.client_metadata
+                ),
+            },
+        ).returning(sessions.c.session_id)
         with self.engine.begin() as connection:
             return connection.execute(statement).scalar_one()
 
@@ -444,6 +443,238 @@ class TelemetryRepository:
                     followed_artists.c.artist_id == interaction.artist_id,
                 )
             )
+
+
+class AsyncTelemetryRepository:
+    """Async serving counterpart for the latency-sensitive telemetry operations."""
+
+    def __init__(self, engine: AsyncEngine) -> None:
+        self.engine = engine
+
+    async def resolve_session(
+        self,
+        client_session_key: str,
+        *,
+        user_id: uuid.UUID | None = None,
+        client_metadata: dict[str, object] | None = None,
+    ) -> uuid.UUID:
+        if not client_session_key.strip():
+            raise ValueError("client_session_key must not be empty")
+        session_id = uuid7()
+        insert_statement = postgresql_insert(sessions).values(
+            session_id=session_id,
+            user_id=user_id,
+            client_session_key=client_session_key,
+            client_metadata=client_metadata or {},
+        )
+        statement = insert_statement.on_conflict_do_update(
+            index_elements=[sessions.c.client_session_key],
+            set_={
+                "last_seen_at": func.now(),
+                "client_metadata": sessions.c.client_metadata.op("||")(
+                    insert_statement.excluded.client_metadata
+                ),
+            },
+        ).returning(sessions.c.session_id)
+        async with self.engine.begin() as connection:
+            return (await connection.execute(statement)).scalar_one()
+
+    async def start_query(self, query: QueryStart) -> uuid.UUID:
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                insert(queries).values(
+                    query_id=query.query_id,
+                    request_id=query.request_id,
+                    session_id=query.session_id,
+                    user_id=query.user_id,
+                    parent_query_id=query.parent_query_id,
+                    query_modality=query.query_modality,
+                    query_text=query.query_text,
+                    query_image_uri=query.query_image_uri,
+                    positive_artwork_ids=list(query.positive_artwork_ids),
+                    negative_artwork_ids=list(query.negative_artwork_ids),
+                    filters=query.filters,
+                    retrieval_weights=query.retrieval_weights,
+                    model_bundle_version=query.model_bundle_version,
+                    index_version=query.index_version,
+                )
+            )
+        return query.query_id
+
+    async def complete_query(
+        self,
+        query_id: uuid.UUID,
+        *,
+        candidate_count: int,
+        result_count: int,
+        latency_ms: float,
+        latency_breakdown: dict[str, float],
+    ) -> None:
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                update(queries)
+                .where(queries.c.query_id == query_id)
+                .values(
+                    candidate_count=candidate_count,
+                    result_count=result_count,
+                    latency_ms=latency_ms,
+                    latency_breakdown=latency_breakdown,
+                    status="completed",
+                    completed_at=func.now(),
+                )
+            )
+
+    async def fail_query(
+        self,
+        query_id: uuid.UUID,
+        *,
+        error_type: str,
+        latency_ms: float,
+        latency_breakdown: dict[str, float] | None = None,
+    ) -> None:
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                update(queries)
+                .where(queries.c.query_id == query_id)
+                .values(
+                    status="error",
+                    error_type=error_type,
+                    latency_ms=latency_ms,
+                    latency_breakdown=latency_breakdown or {},
+                    completed_at=func.now(),
+                )
+            )
+
+    async def record_ranking_stage(
+        self,
+        query_id: uuid.UUID,
+        stage: RankingStage,
+    ) -> uuid.UUID:
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                insert(ranking_runs).values(
+                    ranking_run_id=stage.ranking_run_id,
+                    query_id=query_id,
+                    stage=stage.stage,
+                    candidate_count=stage.candidate_count,
+                    model_version=stage.model_version,
+                    index_version=stage.index_version,
+                    latency_ms=stage.latency_ms,
+                    candidate_artifact_uri=stage.candidate_artifact_uri,
+                    score_summary=stage.score_summary,
+                )
+            )
+        return stage.ranking_run_id
+
+    async def record_impressions(
+        self,
+        query_id: uuid.UUID,
+        session_id: uuid.UUID,
+        values: Sequence[Impression],
+    ) -> None:
+        if not values:
+            return
+        rows = [
+            {
+                "impression_id": item.impression_id,
+                "query_id": query_id,
+                "session_id": session_id,
+                "artwork_id": item.artwork_id,
+                "artist_id": item.artist_id,
+                "result_rank": item.result_rank,
+                "fusion_score": item.fusion_score,
+                "clip_score": item.clip_score,
+                "style_score": item.style_score,
+                "scores": item.scores,
+                "model_bundle_version": item.model_bundle_version,
+                "index_version": item.index_version,
+            }
+            for item in values
+        ]
+        async with self.engine.begin() as connection:
+            await connection.execute(insert(result_impressions), rows)
+
+    async def record_candidates(
+        self,
+        query_id: uuid.UUID,
+        values: Sequence[RankedCandidate],
+    ) -> None:
+        if not values:
+            return
+        rows = [
+            {
+                "query_id": query_id,
+                "artwork_id": item.artwork_id,
+                "artist_id": item.artist_id,
+                "candidate_rank": item.candidate_rank,
+                "fusion_score": item.fusion_score,
+                "clip_score": item.clip_score,
+                "clip_rank": item.clip_rank,
+                "style_score": item.style_score,
+                "style_rank": item.style_rank,
+                "scores": item.scores,
+                "model_bundle_version": item.model_bundle_version,
+                "index_version": item.index_version,
+            }
+            for item in values
+        ]
+        async with self.engine.begin() as connection:
+            await connection.execute(insert(retrieval_candidates), rows)
+
+    async def record_relevance_feedback(
+        self,
+        *,
+        client_session_key: str,
+        query_id: uuid.UUID,
+        artwork_id: str,
+        grade: str,
+    ) -> tuple[uuid.UUID, int] | None:
+        relevance = {"bad": 0, "good": 1, "great": 2}.get(grade)
+        if relevance is None:
+            raise ValueError("feedback grade must be great, good, or bad")
+        target_statement = (
+            select(
+                queries.c.session_id,
+                queries.c.user_id,
+                result_impressions.c.artist_id,
+                result_impressions.c.result_rank,
+            )
+            .select_from(
+                queries.join(sessions, sessions.c.session_id == queries.c.session_id).join(
+                    result_impressions,
+                    and_(
+                        result_impressions.c.query_id == queries.c.query_id,
+                        result_impressions.c.session_id == queries.c.session_id,
+                    ),
+                )
+            )
+            .where(
+                queries.c.query_id == query_id,
+                queries.c.status == "completed",
+                sessions.c.client_session_key == client_session_key,
+                result_impressions.c.artwork_id == artwork_id,
+            )
+        )
+        async with self.engine.begin() as connection:
+            target = (await connection.execute(target_statement)).first()
+            if target is None:
+                return None
+            interaction_id = uuid7()
+            await connection.execute(
+                insert(interaction_events).values(
+                    interaction_id=interaction_id,
+                    query_id=query_id,
+                    session_id=target.session_id,
+                    user_id=target.user_id,
+                    artwork_id=artwork_id,
+                    artist_id=target.artist_id,
+                    interaction_type="relevance_feedback",
+                    result_rank=target.result_rank,
+                    value=relevance > 0,
+                    metadata={"grade": grade, "relevance": relevance},
+                )
+            )
+        return interaction_id, int(target.result_rank)
 
 
 class OutboxRepository:

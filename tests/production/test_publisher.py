@@ -8,7 +8,11 @@ import time
 
 from artsearch.ingest.db import connect, init_db
 from artsearch.production.object_store import LocalObjectStore, ObjectRef
-from artsearch.production.publisher import candidate_ids_from_jsonl, publish_corpus_originals
+from artsearch.production.publisher import (
+    candidate_ids_from_jsonl,
+    publish_corpus_images,
+    publish_corpus_originals,
+)
 
 
 def test_publish_corpus_originals_checkpoints_object_uri(tmp_path: Path) -> None:
@@ -70,6 +74,58 @@ def test_publish_corpus_originals_checkpoints_object_uri(tmp_path: Path) -> None
         candidate_ids={"candidate"},
     )
     assert repaired.published == 1
+
+
+def test_publish_processed_display_instead_of_source_original(tmp_path: Path) -> None:
+    raw = tmp_path / "data/raw/artist/image.jpg"
+    processed = tmp_path / "data/processed/artist/image.jpg"
+    raw.parent.mkdir(parents=True)
+    processed.parent.mkdir(parents=True)
+    raw.write_bytes(b"large source original" * 100)
+    processed.write_bytes(b"small display")
+    database = tmp_path / "data/artsearch.db"
+    with connect(database) as connection:
+        init_db(connection)
+        connection.execute(
+            """
+            INSERT INTO artists (artist_id, display_name, folder_name, source_platform)
+            VALUES ('artist', 'Artist', 'artist', 'bluesky')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO artworks (
+                artwork_id, artist_id, raw_path, processed_path, source_platform,
+                source_id, file_hash, validated
+            ) VALUES ('artwork', 'artist', ?, ?, 'bluesky', 'candidate', ?, 1)
+            """,
+            (
+                str(raw.relative_to(tmp_path)),
+                str(processed.relative_to(tmp_path)),
+                hashlib.sha256(raw.read_bytes()).hexdigest(),
+            ),
+        )
+        connection.commit()
+
+    result = publish_corpus_images(
+        database,
+        tmp_path,
+        LocalObjectStore(tmp_path / "objects"),
+        source="processed",
+        role="display",
+        namespace="corpus/display",
+    )
+
+    assert result.published == 1
+    assert result.source == "processed"
+    assert result.role == "display"
+    with connect(database) as connection:
+        row = connection.execute(
+            "SELECT * FROM artwork_objects WHERE artwork_id = 'artwork'"
+        ).fetchone()
+    assert row["role"] == "display"
+    assert row["content_sha256"] == hashlib.sha256(processed.read_bytes()).hexdigest()
+    assert row["byte_size"] == len(processed.read_bytes())
 
 
 def test_candidate_ids_from_jsonl_deduplicates_run_ids(tmp_path: Path) -> None:

@@ -37,10 +37,10 @@ Warm median latency from the same pinned FP32 model was:
 | 2 | 900.67 ms | 1.87x |
 | 4 | 567.16 ms | 2.98x |
 
-The public deployment now uses one scale-to-zero Container with 2 vCPU, 6 GiB
+Each public serving shard uses a scale-to-zero Container with 2 vCPU, 6 GiB
 memory, and `OMP_NUM_THREADS=2` / `MKL_NUM_THREADS=2`. Six GiB is the minimum
-memory allocation for a custom two-vCPU Cloudflare Container. The one-instance
-and one-inference-owner ceilings remain unchanged.
+memory allocation for a custom two-vCPU Cloudflare Container. The stream-day
+profile permits three shards while retaining one inference owner per shard.
 
 ## Runtime Experiments
 

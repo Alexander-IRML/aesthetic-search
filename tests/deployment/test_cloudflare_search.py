@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEPLOYMENT = ROOT / "deploy/cloudflare-search"
 
 
-def test_cloudflare_container_contract_is_small_and_single_owner() -> None:
+def test_cloudflare_container_contract_has_a_bounded_stream_burst_pool() -> None:
     config = json.loads((DEPLOYMENT / "wrangler.jsonc").read_text(encoding="utf-8"))
 
     assert config["compatibility_date"] == "2026-08-21"
@@ -30,6 +30,7 @@ def test_cloudflare_container_contract_is_small_and_single_owner() -> None:
     }
     assert config["ai"] == {"binding": "AI"}
     assert config["secrets"]["required"] == [
+        "ARTSEARCH_VISITOR_HASH_SECRET",
         "DATABASE_URL",
         "QDRANT_API_KEY",
         "QDRANT_URL",
@@ -38,12 +39,12 @@ def test_cloudflare_container_contract_is_small_and_single_owner() -> None:
         {
             "name": "SEARCH_RATE_LIMITER",
             "namespace_id": "50010",
-            "simple": {"limit": 4, "period": 60},
+            "simple": {"limit": 12, "period": 60},
         },
         {
             "name": "SEARCH_LOCATION_RATE_LIMITER",
             "namespace_id": "50011",
-            "simple": {"limit": 8, "period": 60},
+            "simple": {"limit": 120, "period": 60},
         },
         {
             "name": "FEEDBACK_RATE_LIMITER",
@@ -60,9 +61,19 @@ def test_cloudflare_container_contract_is_small_and_single_owner() -> None:
             "namespace_id": "50014",
             "simple": {"limit": 24, "period": 60},
         },
+        {
+            "name": "VISIT_RATE_LIMITER",
+            "namespace_id": "50015",
+            "simple": {"limit": 10, "period": 60},
+        },
+        {
+            "name": "VISIT_LOCATION_RATE_LIMITER",
+            "namespace_id": "50016",
+            "simple": {"limit": 300, "period": 60},
+        },
     ]
     container = config["containers"][0]
-    assert container["max_instances"] == 1
+    assert container["max_instances"] == 3
     assert container["instance_type"] == {
         "vcpu": 2,
         "memory_mib": 6144,
@@ -86,13 +97,18 @@ def test_cloudflare_runtime_configs_use_external_catalog_and_named_vectors() -> 
     assert api.serve_local_images is False
     assert api.asset_base_url == "/media/artsearch"
     assert api.max_concurrent_inferences == 1
+    assert api.max_pending_inferences == 24
+    assert api.inference_queue_timeout_seconds == 120.0
+    assert container_burst_capacity(api, 3) >= 50
 
 
 def test_cloudflare_image_bakes_models_and_starts_offline() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
-    assert "FROM ml AS cloudflare-search" in dockerfile
-    assert "python -m artsearch.api.model_cache" in dockerfile
+    assert "FROM runtime-base AS cloudflare-search" in dockerfile
+    assert "--component clip" in dockerfile
+    assert "--component csd" in dockerfile
+    assert '".[api,postgres,qdrant]"' in dockerfile
     assert "HF_HUB_OFFLINE=1" in dockerfile
     assert "TRANSFORMERS_OFFLINE=1" in dockerfile
     assert "configs/production.cloudflare.toml" in dockerfile
@@ -108,15 +124,21 @@ def test_cloudflare_worker_does_not_contain_secret_values() -> None:
 
     assert "QDRANT_API_KEY: env.QDRANT_API_KEY" in source
     assert "DATABASE_URL: env.DATABASE_URL" in source
+    assert "ARTSEARCH_VISITOR_HASH_SECRET: env.ARTSEARCH_VISITOR_HASH_SECRET" in source
     assert "env.ASSETS.fetch" in source
     assert "SEARCH_RATE_LIMITER" in source
     assert "SEARCH_LOCATION_RATE_LIMITER" in source
+    assert "VISIT_LOCATION_RATE_LIMITER" in source
+    assert "CONTAINER_SHARD_COUNT = 3" in source
+    assert "containerShard(request)" in source
+    assert 'const SITE_VISIT_ROUTE = "/api/site-visit"' in source
     assert 'const ASSISTANT_ROUTE = "/api/retrieval-assistant"' in source
     assert 'const RUNTIME_STATUS_ROUTE = "/api/runtime-status"' in source
     assert "await container.getState()" in source
     assert "X-ArtSearch-Container-Wait-Ms" in source
     assert "X-ArtSearch-Container-Fetch-Ms" in source
     assert "X-ArtSearch-Edge-Total-Ms" in source
+    assert "X-ArtSearch-Container-Shard" in source
     assert 'sleepAfter = "15m"' in source
     assert '"@cf/meta/llama-3.2-1b-instruct"' in assistant
     assert "resolveArtistSearchAction" in assistant
@@ -148,5 +170,15 @@ def test_public_demo_exposes_warm_state_and_request_timing() -> None:
     assert 'data-timing="csd_backbone_ms"' in html
     assert 'data-timing="telemetry_wait_ms"' in html
     assert 'fetch("/api/runtime-status"' in script
+    assert 'fetch("/api/site-visit"' in script
+    assert "these might do something idk" in html
+    assert 'name="clip_first_half"' in html
+    assert 'name="clip_second_half"' in html
+    assert 'name="csd_first_half"' in html
+    assert 'name="csd_second_half"' in html
     assert "setInterval" not in script
     assert "X-ArtSearch-Container-State" in script
+
+
+def container_burst_capacity(api, shards: int) -> int:
+    return shards * (api.max_concurrent_inferences + api.max_pending_inferences)

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
+import re
 
 from artsearch.ingest.config import load_config
 from artsearch.monitoring.launcher import install_desktop_launcher
@@ -13,12 +15,16 @@ from artsearch.monitoring.snapshot import MonitoringInputs, build_monitoring_sna
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
+    _load_private_environment(Path(args.env_file))
+    production_config = Path(args.production_config or _default_production_config())
     inputs = MonitoringInputs(
         app_config_path=Path(args.config),
         filter_config_path=Path(args.filter_config),
         prompt_config_path=Path(args.prompt_config),
-        production_config_path=Path(args.production_config),
+        production_config_path=production_config,
         monitoring_config_path=Path(args.monitoring_config),
+        bluesky_config_path=Path(args.bluesky_config),
+        discovery_config_path=Path(args.discovery_config),
         decisions_paths=tuple(Path(value) for value in args.decisions),
         retrieval_judgment_paths=tuple(Path(value) for value in args.judgments),
         filter_evaluation_path=(Path(args.filter_evaluation) if args.filter_evaluation else None),
@@ -66,8 +72,21 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default="config/config.yaml")
     parser.add_argument("--filter-config", default="configs/artwork_filter.default.toml")
     parser.add_argument("--prompt-config", default="configs/artwork_filter.prompts.v1.toml")
-    parser.add_argument("--production-config", default="configs/production.default.toml")
+    parser.add_argument(
+        "--production-config",
+        help=(
+            "Production config. Defaults to the ignored alpha-cloud config when present, "
+            "otherwise configs/production.default.toml."
+        ),
+    )
     parser.add_argument("--monitoring-config", default="configs/model_dashboard.default.toml")
+    parser.add_argument("--bluesky-config", default="configs/bluesky.default.toml")
+    parser.add_argument("--discovery-config", default="configs/discovery.default.toml")
+    parser.add_argument(
+        "--env-file",
+        default="deploy/alpha/.env",
+        help="Ignored private environment file loaded when it exists.",
+    )
     parser.add_argument("--decisions", action="append", default=[])
     parser.add_argument("--judgments", action="append", default=[])
     parser.add_argument("--filter-evaluation")
@@ -100,6 +119,32 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Install a double-click launcher on the current desktop and exit.",
     )
     return parser
+
+
+def _default_production_config() -> str:
+    local = Path("configs/production.alpha-cloud.local.toml")
+    return str(local if local.exists() else Path("configs/production.default.toml"))
+
+
+def _load_private_environment(path: Path) -> None:
+    if not path.exists():
+        return
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line.removeprefix("export ").lstrip()
+        if "=" not in line:
+            raise ValueError(f"invalid environment entry at {path}:{line_number}")
+        name, value = line.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ValueError(f"invalid environment name at {path}:{line_number}")
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        os.environ.setdefault(name, value)
 
 
 if __name__ == "__main__":

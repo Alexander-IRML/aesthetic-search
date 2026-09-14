@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 import sqlite3
 from pathlib import Path
-from typing import Sequence
 
 from artsearch.embed.models import EmbeddingProvider, HuggingFaceEmbeddingProvider
-from artsearch.embed.storage import find_embedding, model_versions_match, upsert_embedding
+from artsearch.embed.storage import upsert_embedding
 from artsearch.ingest.config import AppConfig, load_config
 from artsearch.ingest.db import connect, finish_run, init_db, log_event, start_run
 
@@ -27,25 +27,12 @@ def generate_embeddings_for_config(
 ) -> dict[str, int]:
     model_provider = provider
     run_id = start_run(conn, "generate_embeddings")
-    processed = skipped = errors = 0
+    processed = errors = 0
+    skipped = _current_embedding_count(conn, config)
     try:
-        candidates = _validated_artworks(conn)
-        for batch in _chunks(candidates, config.embeddings.batch_size):
+        for batch in _pending_artwork_batches(conn, config):
             work_items = []
             for row in batch:
-                embedding_row = find_embedding(conn, row["artwork_id"])
-                if model_versions_match(embedding_row, config.models):
-                    log_event(
-                        conn,
-                        run_id,
-                        level="info",
-                        event_type="embedding_already_current",
-                        artwork_id=row["artwork_id"],
-                        message="Embedding row already matches configured model versions",
-                    )
-                    skipped += 1
-                    continue
-
                 processed_path = _path_from_db(config, row["processed_path"])
                 if not processed_path.exists():
                     log_event(
@@ -105,20 +92,68 @@ def generate_embeddings_for_config(
     return {"processed": processed, "skipped": skipped, "errors": errors}
 
 
-def _validated_artworks(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    return conn.execute(
+def _current_embedding_count(conn: sqlite3.Connection, config: AppConfig) -> int:
+    row = conn.execute(
         """
-        SELECT artwork_id, processed_path
-          FROM artworks
-         WHERE validated = 1
-           AND processed_path IS NOT NULL
-         ORDER BY artwork_id
-        """
-    ).fetchall()
+        SELECT COUNT(*)
+          FROM artworks AS a
+          JOIN embeddings AS e ON e.artwork_id = a.artwork_id
+         WHERE a.validated = 1
+           AND a.processed_path IS NOT NULL
+           AND e.model_name_clip = ?
+           AND e.model_version_clip = ?
+           AND e.model_name_csd = ?
+           AND e.model_version_csd = ?
+        """,
+        (
+            config.models.clip_model_name,
+            config.models.clip_model_version,
+            config.models.csd_model_name,
+            config.models.csd_model_version,
+        ),
+    ).fetchone()
+    return int(row[0])
 
 
-def _chunks(rows: Sequence[sqlite3.Row], batch_size: int) -> list[Sequence[sqlite3.Row]]:
-    return [rows[index : index + batch_size] for index in range(0, len(rows), batch_size)]
+def _pending_artwork_batches(
+    conn: sqlite3.Connection,
+    config: AppConfig,
+) -> Iterator[list[sqlite3.Row]]:
+    """Keyset-stream only rows that need the configured model bundle."""
+
+    last_artwork_id = ""
+    while True:
+        rows = conn.execute(
+            """
+            SELECT a.artwork_id, a.processed_path
+              FROM artworks AS a
+              LEFT JOIN embeddings AS e ON e.artwork_id = a.artwork_id
+             WHERE a.validated = 1
+               AND a.processed_path IS NOT NULL
+               AND a.artwork_id > ?
+               AND (
+                   e.artwork_id IS NULL
+                   OR e.model_name_clip IS NOT ?
+                   OR e.model_version_clip IS NOT ?
+                   OR e.model_name_csd IS NOT ?
+                   OR e.model_version_csd IS NOT ?
+               )
+             ORDER BY a.artwork_id
+             LIMIT ?
+            """,
+            (
+                last_artwork_id,
+                config.models.clip_model_name,
+                config.models.clip_model_version,
+                config.models.csd_model_name,
+                config.models.csd_model_version,
+                config.embeddings.batch_size,
+            ),
+        ).fetchall()
+        if not rows:
+            return
+        yield rows
+        last_artwork_id = str(rows[-1]["artwork_id"])
 
 
 def _path_from_db(config: AppConfig, value: str) -> Path:

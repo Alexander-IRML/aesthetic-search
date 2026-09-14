@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const secretNames = [
+  "ARTSEARCH_VISITOR_HASH_SECRET",
   "DATABASE_URL",
   "QDRANT_API_KEY",
   "QDRANT_URL"

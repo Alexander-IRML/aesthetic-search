@@ -2,45 +2,57 @@
 
 Status: deployed public resume-demo vertical slice
 
+Serving concurrency is governed by
+[ADR 0004](adr/0004-async-online-serving.md).
+
 ## Responsibility
 
 The public browser sends one reference artwork and receives at most ten similar
 corpus artworks. It never receives a Qdrant key, PostgreSQL URL, object-store
 credential, model token, raw vector, or private filesystem path.
 
-The initial deployment is deliberately one application service. It owns the
-HTTP API and exact query encoder in one process, then calls hosted Qdrant and
-PostgreSQL. The encoder can move behind a private service boundary later without
-changing the frontend contract.
+The hosted stream-day profile uses three application-service shards. Each owns
+its HTTP API and exact query encoder in one process, then calls hosted Qdrant and
+PostgreSQL. The Worker deterministically assigns a source IP to a shard, keeping
+warm-state checks and searches on the same model process. The encoder can move
+behind a private service boundary later without changing the frontend contract.
 
 ## Request Path
 
 1. Cloudflare terminates TLS, serves the frontend from edge assets, and applies
    Worker rate-limit bindings before model compute can start.
 2. `POST /api/search-by-image` accepts one multipart `image`, an opaque browser
-   `session_key`, and an optional stable `artist_id` scope.
-3. The API streams with a hard byte cap, verifies JPEG/PNG/WebP MIME against the
-   decoded format, rejects animation and decompression bombs, applies EXIF
-   orientation, and converts to RGB in memory.
-4. A bounded model owner produces normalized CLIP subject and CSD style vectors
-   with the exact model revisions used by the active corpus collection.
-5. Qdrant independently retrieves each named vector, then combines the recall
+   `session_key`, four optional coordinate-half weights, and an optional stable
+   `artist_id` scope.
+3. The API streams with a hard byte cap. Pillow verification, EXIF orientation,
+   and RGB conversion run outside the ASGI event loop; JPEG/PNG/WebP MIME,
+   animation, pixel-count, and decompression-bomb checks still apply.
+4. A bounded model executor produces normalized CLIP subject and CSD style
+   vectors with the exact model revisions used by the active corpus collection.
+   Each hosted shard has one model owner and a 24-request bounded waiting room.
+5. The model slot is released before the API asynchronously asks Qdrant to
+   retrieve each named vector and combine the recall
    lists with server-side reciprocal-rank fusion and catalog policy filters. Up
    to 100 fused candidates are retained as reproducible ranking evidence.
-6. The API enriches result IDs from SQLite in development or PostgreSQL in
-   production, converting object keys into CDN URLs and attaching bounded
-   Bluesky post and alt text when available.
+6. The API asynchronously enriches result IDs from PostgreSQL in production,
+   converting object keys into CDN URLs and attaching bounded Bluesky post and
+   alt text when available. Development SQLite calls run in a thread adapter.
 7. The API starts the query telemetry record concurrently with inference, then
-   joins it only when the stable query/session IDs are needed. It queues the
-   ranking-stage, top-100 candidate, top-10 impression, version, and completed
-   timing writes on the same ordered worker after the response is built.
-   Feedback uses that worker so it cannot overtake its search record.
+   joins it only when the stable query/session IDs are needed. Ranking-stage,
+   top-100 candidate, top-10 impression, version, and completed timing writes
+   continue asynchronously after the response is built. Feedback waits only for
+   its own query's impressions; slow telemetry for one user cannot serialize
+   unrelated searches.
 8. The decoded query and original upload bytes leave scope without being stored.
 9. After the results render, the browser can send only the ten compact result
    records to the edge-only retrieval assistant for a grounded summary.
 10. If a follow-up names one displayed artist, deterministic agent routing
     resubmits the same browser-held image with that artist's stable ID. Qdrant
     applies an exact metadata filter before CLIP/CSD fusion.
+11. At page load, a best-effort visit beacon records an HMAC-SHA256 digest of
+    the canonical source IP in session metadata. Raw IP addresses are not
+    persisted. The beacon also starts that visitor's assigned model shard,
+    giving it time to warm before an image is selected.
 
 Qdrant recommends named-vector prefetch plus top-level RRF for
 [multi-representation hybrid queries](https://qdrant.tech/documentation/search/hybrid-queries/).
@@ -73,6 +85,10 @@ Content-Type: multipart/form-data
 image=<jpeg|png|webp>
 session_key=<opaque browser identifier>
 artist_id=<optional stable artist scope>
+clip_first_half=<0.1..2.0, default 1.0>
+clip_second_half=<0.1..2.0, default 1.0>
+csd_first_half=<0.1..2.0, default 1.0>
+csd_second_half=<0.1..2.0, default 1.0>
 ```
 
 The result count is server-controlled and fixed at ten for this version:
@@ -84,6 +100,12 @@ The result count is server-controlled and fixed at ten for this version:
   "session_id": "019...",
   "query_modality": "image",
   "result_count": 10,
+  "retrieval_weights": {
+    "clip_first_half": 1.0,
+    "clip_second_half": 1.0,
+    "csd_first_half": 1.0,
+    "csd_second_half": 1.0
+  },
   "results": [
     {
       "artwork_id": "...",
@@ -108,7 +130,9 @@ The result count is server-controlled and fixed at ten for this version:
   ],
   "model": {
     "bundle_version": "sha256...",
+    "vector_backend": "qdrant",
     "index_alias": "artworks_active",
+    "index_version": "artworks_clip3_csd1_v2",
     "clip_model": "...",
     "clip_revision": "...",
     "csd_model": "...",
@@ -135,6 +159,14 @@ The result count is server-controlled and fixed at ten for this version:
 }
 ```
 
+The experimental controls multiply the first and second halves of the query
+embedding, then L2-normalize it before retrieval. CLIP is currently 512
+dimensions, split 256/256; CSD is 768 dimensions, split 384/384. Stored corpus
+vectors do not change. These coordinate ranges are arbitrary learned latent
+axes, not known semantic regions, so a half is not guaranteed to correspond to
+a human concept. Equal A/B weights cancel during normalization and preserve the
+baseline query direction; only their ratio changes ranking.
+
 `encode_ms` is the aggregate encoder wall time. Its CLIP, CSD, and vector
 normalization children make model cost directly attributable; they must not be
 added to `encode_ms` a second time. The five `csd_*` stage values are children
@@ -151,6 +183,8 @@ Cloudflare answers this by reading Container state without forwarding a health
 request to the Python process, so checking the light does not start the model.
 The browser checks once at page load rather than polling continuously. A local
 FastAPI run exposes the same contract from its in-process service state.
+The hosted response also reports the source-IP-assigned shard and total shard
+count. It describes that visitor's backend, not every shard in the pool.
 
 Container-routed responses include:
 
@@ -158,6 +192,7 @@ Container-routed responses include:
 - `X-ArtSearch-Container-Wait-Ms`: time spent obtaining a ready Container.
 - `X-ArtSearch-Container-Fetch-Ms`: time to receive backend response headers.
 - `X-ArtSearch-Edge-Total-Ms`: complete Worker time for the routed request.
+- `X-ArtSearch-Container-Shard`: assigned shard number and configured count.
 - `Server-Timing`: the same edge phases for browser developer tools.
 
 The public workbench combines those values with browser wall time and API timing
@@ -249,19 +284,44 @@ arbitrary filter. The scoped query is recorded in PostgreSQL telemetry.
 
 ## Runtime Limits
 
-Defaults live in `configs/search_api.default.toml`:
+Hosted stream-day values live in `configs/search_api.cloudflare.toml` and
+`deploy/cloudflare-search/wrangler.jsonc`:
 
 - 10 MB and 40 million decoded pixels.
 - JPEG, PNG, and WebP only; single-frame only.
-- One CPU inference owner and a two-second admission queue.
+- Three deterministic Container shards, each with one CPU inference owner.
+- Twenty-four waiting requests per shard and a 120-second admission deadline.
 - 120-second local model deadline.
-- Four searches per source IP and eight searches per Cloudflare edge location
+- Twelve searches per source IP and 120 searches per Cloudflare edge location
   per minute before Container wake.
 - Sixty feedback writes per source IP per minute at the edge.
+- Ten visit beacons per source IP and 300 per edge location per minute.
 - Twelve assistant requests per source IP and 24 per edge location per minute.
 - Twelve searches and 120 feedback writes per source IP per minute in the
   Container as defense in depth.
 - Ten results, at most two from one artist through the Qdrant policy.
+
+## Async Serving And Backpressure
+
+The ASGI event loop owns request coordination, health checks, Qdrant calls,
+PostgreSQL catalog reads, and telemetry. CPU-bound image decode and CLIP/CSD
+inference never execute on that loop. The query encoder has a dedicated bounded
+executor because overlapping copies of the pinned models would exceed the small
+container's useful memory budget.
+
+This creates a deliberate pipeline: an upload can wait for the model owner, use
+it once, release it, and then await remote retrieval independently. While that
+request is waiting on Qdrant or PostgreSQL, the model owner can encode the next
+query and `/health/live`, `/health/ready`, and `/api/runtime-status` remain
+responsive. A full admission queue returns `503 encoder_busy` with `Retry-After`
+instead of creating an unbounded task backlog. Runtime status exposes active and
+pending inference counts for operations and the demo's warm-state display.
+
+The deployment runs one Uvicorn worker per loaded model copy. Horizontal
+Container shards are the scaling unit; increasing generic ASGI worker count
+would load another CLIP/CSD pair into the same container. Three shards admit up
+to 75 active-or-waiting encodes, but still execute only three model inferences
+at once. That is a burst buffer, not a 50-way inference promise.
 
 Only Cloudflare's trusted `CF-Connecting-IP` is used when
 `trust_proxy_headers=true`. The hosted origin must be reachable only through the
@@ -289,12 +349,12 @@ offline unless the frontend is served through local Wrangler development.
 
 ## Hosted Deployment
 
-The alpha deployment uses a Cloudflare Worker in front of one scale-to-zero
-Cloudflare Container. The Worker serves the public frontend without waking the
-Container, rate-limits API requests, serves approved media through a read-only
-R2 binding, and keeps Qdrant and PostgreSQL credentials inside managed runtime
-secrets. The Container bakes the pinned model weights and starts with Hugging
-Face network access disabled.
+The alpha deployment uses a Cloudflare Worker in front of three scale-to-zero
+Cloudflare Container shards. The Worker serves the public frontend, rate-limits
+API requests, serves approved media through a read-only R2 binding, and keeps
+Qdrant and PostgreSQL credentials inside managed runtime secrets. A page-load
+visit beacon wakes only the visitor's assigned shard. Each Container bakes the
+pinned model weights and starts with Hugging Face network access disabled.
 
 Before traffic expands beyond the trusted alpha:
 
@@ -311,9 +371,11 @@ Before traffic expands beyond the trusted alpha:
 ## Online Quality Metrics
 
 The control dashboard reads aggregate PostgreSQL telemetry over a configurable
-rolling window and reports total searches, search success/error rates, and p50
-and p95 total latency. Feedback maps `great` to relevance 2, `good` to relevance
-1, and `bad` to relevance 0. Great and Good therefore count as hits.
+rolling window and reports total searches, search success/error rates, p50 and
+p95 total latency, and approximate unique demo IPs. The unique count uses only
+keyed hashes; shared NATs can undercount people and changing addresses can
+overcount them. Feedback maps `great` to relevance 2, `good` to relevance 1,
+and `bad` to relevance 0. Great and Good therefore count as hits.
 
 - **Judged hit rate** is available immediately from partial feedback, but is not
   labeled Precision@10.

@@ -1,3 +1,4 @@
 QDRANT_URL=https://replace-me.cloud.qdrant.io
 QDRANT_API_KEY=replace-me
 DATABASE_URL=postgresql://replace-me
+ARTSEARCH_VISITOR_HASH_SECRET=replace-with-a-long-random-secret

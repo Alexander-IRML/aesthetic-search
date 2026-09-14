@@ -7,6 +7,7 @@ import uuid
 
 import httpx
 from PIL import Image
+import pytest
 
 from artsearch.api.app import create_app
 from artsearch.api.catalog import CatalogArtwork
@@ -16,24 +17,25 @@ from artsearch.api.schemas import (
     ImageSearchResponse,
     MatchEvidence,
     ModelContract,
+    RetrievalWeights,
     ResultSourceMetadata,
     SearchTiming,
 )
 from artsearch.api.telemetry import FeedbackTelemetryReceipt
-from artsearch.production.config import QdrantConfig
+from artsearch.retrieval.backend import RetrievalContract
 
 
 class _Catalog:
     def __init__(self, image_path: Path | None = None) -> None:
         self.image_path = image_path
 
-    def get_many(self, artwork_ids):
+    async def get_many(self, artwork_ids):
         return {
             value: CatalogArtwork(value, "artist", "Artist", f"/api/artworks/{value}/image")
             for value in artwork_ids
         }
 
-    def local_image_path(self, artwork_id):
+    async def local_image_path(self, artwork_id):
         return self.image_path if artwork_id == "art-1" else None
 
 
@@ -41,9 +43,20 @@ class _Service:
     def __init__(self, image_path: Path | None = None) -> None:
         self.ready = True
         self.model_bundle = "b" * 64
-        self.qdrant_config = QdrantConfig(enabled=True, alias_name="artworks_active")
+        self.retrieval_contract = RetrievalContract(
+            backend="faiss",
+            model_bundle_version=self.model_bundle,
+            index_alias="artworks_active",
+            index_version="snapshot-v1",
+            candidate_limit=100,
+            clip_dimension=512,
+            csd_dimension=768,
+        )
         self.catalog = _Catalog(image_path)
         self.artist_id = None
+        self.retrieval_weights = None
+        self.visitor_hash = None
+        self.visits: list[tuple[str, str]] = []
 
     async def search_image(
         self,
@@ -52,15 +65,20 @@ class _Service:
         client_session_key,
         upload_decode_ms,
         artist_id=None,
+        retrieval_weights=None,
+        visitor_hash=None,
     ):
         assert image.mode == "RGB"
         assert client_session_key == "test-session-1234"
         self.artist_id = artist_id
+        self.retrieval_weights = retrieval_weights
+        self.visitor_hash = visitor_hash
         return ImageSearchResponse(
             api_version="1.0.0",
             query_id="query-1234",
             session_id="session-1234",
             result_count=1,
+            retrieval_weights=retrieval_weights or RetrievalWeights(),
             results=[
                 ArtworkSearchResult(
                     artwork_id="art-1",
@@ -78,7 +96,9 @@ class _Service:
             ],
             model=ModelContract(
                 bundle_version="b" * 64,
+                vector_backend="faiss",
                 index_alias="artworks_active",
+                index_version="snapshot-v1",
                 clip_model="clip",
                 clip_revision="clip-v1",
                 csd_model="csd",
@@ -103,6 +123,10 @@ class _Service:
                 total_ms=5,
             ),
         )
+
+    async def record_site_visit(self, *, client_session_key, visitor_hash):
+        self.visits.append((client_session_key, visitor_hash))
+        return True
 
     async def submit_feedback(
         self,
@@ -129,6 +153,8 @@ class _BrokenService(_Service):
         client_session_key,
         upload_decode_ms,
         artist_id=None,
+        retrieval_weights=None,
+        visitor_hash=None,
     ):
         raise ValueError("private implementation detail")
 
@@ -143,6 +169,7 @@ def test_upload_frontend_and_search_contract(tmp_path: Path) -> None:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             frontend = await client.get("/search")
+            readiness = await client.get("/health/ready")
             runtime_status = await client.get("/api/runtime-status")
             response = await client.post(
                 "/api/search-by-image",
@@ -150,9 +177,9 @@ def test_upload_frontend_and_search_contract(tmp_path: Path) -> None:
                 data={"session_key": "test-session-1234"},
             )
             image_response = await client.get("/api/artworks/art-1/image")
-        return frontend, runtime_status, response, image_response
+        return frontend, readiness, runtime_status, response, image_response
 
-    frontend, runtime_status, response, image_response = asyncio.run(scenario())
+    frontend, readiness, runtime_status, response, image_response = asyncio.run(scenario())
 
     assert frontend.status_code == 200
     assert "Drop an artwork here" in frontend.text
@@ -160,6 +187,18 @@ def test_upload_frontend_and_search_contract(tmp_path: Path) -> None:
     assert "Retrieval assistant" in frontend.text
     assert "Request trace" in frontend.text
     assert "BACKEND CHECKING" in frontend.text
+    assert "these might do something idk" in frontend.text
+    assert 'name="clip_first_half"' in frontend.text
+    assert 'name="clip_second_half"' in frontend.text
+    assert 'name="csd_first_half"' in frontend.text
+    assert 'name="csd_second_half"' in frontend.text
+    assert readiness.json() == {
+        "status": "ready",
+        "model_bundle_version": "b" * 64,
+        "vector_backend": "faiss",
+        "index_alias": "artworks_active",
+        "index_version": "snapshot-v1",
+    }
     assert runtime_status.status_code == 200
     assert runtime_status.json()["warm"] is True
     assert runtime_status.headers["cache-control"] == "no-store"
@@ -170,6 +209,12 @@ def test_upload_frontend_and_search_contract(tmp_path: Path) -> None:
         "alt_text": "A character illustration",
     }
     assert response.json()["result_count"] == 1
+    assert response.json()["retrieval_weights"] == {
+        "clip_first_half": 1.0,
+        "clip_second_half": 1.0,
+        "csd_first_half": 1.0,
+        "csd_second_half": 1.0,
+    }
     assert response.json()["timing"]["csd_encode_ms"] == 1.4
     assert response.json()["timing"]["csd_backbone_ms"] == 1.0
     assert response.headers["x-content-type-options"] == "nosniff"
@@ -197,6 +242,65 @@ def test_search_accepts_a_stable_artist_scope() -> None:
 
     assert response.status_code == 200
     assert service.artist_id == "bsky_artist_123"
+
+
+def test_search_forwards_embedding_half_weights() -> None:
+    service = _Service()
+    app = create_app(api_config=SearchApiConfig(telemetry_enabled=False), service=service)
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.post(
+                "/api/search-by-image",
+                files={"image": ("query.png", _image_bytes(), "image/png")},
+                data={
+                    "session_key": "test-session-1234",
+                    "clip_first_half": "1.75",
+                    "clip_second_half": "0.25",
+                    "csd_first_half": "0.5",
+                    "csd_second_half": "1.5",
+                },
+            )
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 200
+    assert service.retrieval_weights == RetrievalWeights(
+        clip_first_half=1.75,
+        clip_second_half=0.25,
+        csd_first_half=0.5,
+        csd_second_half=1.5,
+    )
+    assert response.json()["retrieval_weights"]["csd_second_half"] == 1.5
+
+
+def test_site_visit_records_only_a_keyed_ip_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ARTSEARCH_VISITOR_HASH_SECRET", "test-only-secret-value")
+    service = _Service()
+    app = create_app(
+        api_config=SearchApiConfig(telemetry_enabled=True, trust_proxy_headers=True),
+        service=service,
+    )
+
+    async def scenario():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.post(
+                "/api/site-visit",
+                json={"session_key": "test-session-1234"},
+                headers={"cf-connecting-ip": "203.0.113.24"},
+            )
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "recorded"}
+    assert service.visits[0][0] == "test-session-1234"
+    assert len(service.visits[0][1]) == 64
+    assert "203.0.113.24" not in service.visits[0][1]
 
 
 def test_result_feedback_records_a_graded_relevance_event() -> None:

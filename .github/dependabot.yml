@@ -1,0 +1,37 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      python-runtime:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /deploy/cloudflare-search
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      cloudflare-worker:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      containers:
+        patterns: ["*"]

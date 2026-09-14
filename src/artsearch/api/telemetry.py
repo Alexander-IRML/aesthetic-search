@@ -6,13 +6,13 @@ from typing import Protocol, Sequence
 
 from artsearch.postgres.ids import uuid7
 from artsearch.postgres.repositories import (
+    AsyncTelemetryRepository,
     Impression,
     QueryStart,
     RankedCandidate,
     RankingStage,
-    TelemetryRepository,
 )
-from artsearch.retrieval.qdrant import QdrantSearchHit
+from artsearch.retrieval.backend import SearchHit
 
 
 SESSION_NAMESPACE = uuid.UUID("3caad30d-4168-47c4-b1b4-5ae94ddbb2ae")
@@ -34,27 +34,38 @@ class SearchTelemetry(Protocol):
     @property
     def feedback_enabled(self) -> bool: ...
 
-    def start(
+    async def start(
         self,
         *,
         client_session_key: str,
         model_bundle_version: str,
         index_version: str,
+        vector_backend: str = "qdrant",
         artist_id: str | None = None,
+        retrieval_weights: dict[str, float] | None = None,
+        visitor_hash: str | None = None,
     ) -> QueryTelemetryContext: ...
 
-    def complete(
+    async def record_visit(
+        self,
+        *,
+        client_session_key: str,
+        visitor_hash: str,
+    ) -> bool: ...
+
+    async def complete(
         self,
         context: QueryTelemetryContext,
         *,
-        hits: Sequence[QdrantSearchHit],
+        hits: Sequence[SearchHit],
         model_bundle_version: str,
         index_version: str,
+        vector_backend: str = "qdrant",
         timings: dict[str, float],
         displayed_count: int,
     ) -> None: ...
 
-    def fail(
+    async def fail(
         self,
         context: QueryTelemetryContext,
         *,
@@ -63,7 +74,7 @@ class SearchTelemetry(Protocol):
         timings: dict[str, float],
     ) -> None: ...
 
-    def feedback(
+    async def feedback(
         self,
         *,
         client_session_key: str,
@@ -78,32 +89,44 @@ class NoopSearchTelemetry:
     def feedback_enabled(self) -> bool:
         return False
 
-    def start(
+    async def start(
         self,
         *,
         client_session_key: str,
         model_bundle_version: str,
         index_version: str,
+        vector_backend: str = "qdrant",
         artist_id: str | None = None,
+        retrieval_weights: dict[str, float] | None = None,
+        visitor_hash: str | None = None,
     ) -> QueryTelemetryContext:
         return QueryTelemetryContext(
             query_id=uuid7(),
             session_id=uuid.uuid5(SESSION_NAMESPACE, client_session_key),
         )
 
-    def complete(
+    async def record_visit(
+        self,
+        *,
+        client_session_key: str,
+        visitor_hash: str,
+    ) -> bool:
+        return False
+
+    async def complete(
         self,
         context: QueryTelemetryContext,
         *,
-        hits: Sequence[QdrantSearchHit],
+        hits: Sequence[SearchHit],
         model_bundle_version: str,
         index_version: str,
+        vector_backend: str = "qdrant",
         timings: dict[str, float],
         displayed_count: int,
     ) -> None:
         return None
 
-    def fail(
+    async def fail(
         self,
         context: QueryTelemetryContext,
         *,
@@ -113,7 +136,7 @@ class NoopSearchTelemetry:
     ) -> None:
         return None
 
-    def feedback(
+    async def feedback(
         self,
         *,
         client_session_key: str,
@@ -125,48 +148,84 @@ class NoopSearchTelemetry:
 
 
 class PostgresSearchTelemetry:
-    def __init__(self, repository: TelemetryRepository) -> None:
+    def __init__(self, repository: AsyncTelemetryRepository) -> None:
         self.repository = repository
 
     @property
     def feedback_enabled(self) -> bool:
         return True
 
-    def start(
+    async def start(
         self,
         *,
         client_session_key: str,
         model_bundle_version: str,
         index_version: str,
+        vector_backend: str = "qdrant",
         artist_id: str | None = None,
+        retrieval_weights: dict[str, float] | None = None,
+        visitor_hash: str | None = None,
     ) -> QueryTelemetryContext:
-        session_id = self.repository.resolve_session(
+        client_metadata: dict[str, object] = {"surface": "public_search"}
+        if visitor_hash is not None:
+            client_metadata.update(
+                {
+                    "visitor_ip_hash": visitor_hash,
+                    "visitor_hash_version": "hmac-sha256-v1",
+                }
+            )
+        session_id = await self.repository.resolve_session(
             client_session_key,
-            client_metadata={"surface": "public_search"},
+            client_metadata=client_metadata,
         )
+        weights: dict[str, object] = {
+            "clip_first_half": 1.0,
+            "clip_second_half": 1.0,
+            "csd_first_half": 1.0,
+            "csd_second_half": 1.0,
+        }
+        weights.update(retrieval_weights or {})
+        weights.update({"fusion": "rrf", "vector_backend": vector_backend})
         query = QueryStart(
             session_id=session_id,
             query_modality="image",
             filters={"artist_id": artist_id} if artist_id else {},
             model_bundle_version=model_bundle_version,
             index_version=index_version,
-            retrieval_weights={"clip_subject": 1.0, "csd_style": 1.0, "fusion": "rrf"},
+            retrieval_weights=weights,
         )
-        self.repository.start_query(query)
+        await self.repository.start_query(query)
         return QueryTelemetryContext(query_id=query.query_id, session_id=session_id)
 
-    def complete(
+    async def record_visit(
+        self,
+        *,
+        client_session_key: str,
+        visitor_hash: str,
+    ) -> bool:
+        await self.repository.resolve_session(
+            client_session_key,
+            client_metadata={
+                "surface": "public_search",
+                "visitor_ip_hash": visitor_hash,
+                "visitor_hash_version": "hmac-sha256-v1",
+            },
+        )
+        return True
+
+    async def complete(
         self,
         context: QueryTelemetryContext,
         *,
-        hits: Sequence[QdrantSearchHit],
+        hits: Sequence[SearchHit],
         model_bundle_version: str,
         index_version: str,
+        vector_backend: str = "qdrant",
         timings: dict[str, float],
         displayed_count: int,
     ) -> None:
         candidate_count = len(hits)
-        self.repository.record_ranking_stage(
+        await self.repository.record_ranking_stage(
             context.query_id,
             RankingStage(
                 stage="query_embedding",
@@ -176,10 +235,10 @@ class PostgresSearchTelemetry:
                 index_version=index_version,
             ),
         )
-        self.repository.record_ranking_stage(
+        await self.repository.record_ranking_stage(
             context.query_id,
             RankingStage(
-                stage="qdrant_rrf",
+                stage=f"{vector_backend}_rrf",
                 candidate_count=candidate_count,
                 latency_ms=timings.get("vector_search_ms", 0.0),
                 model_version=model_bundle_version,
@@ -188,10 +247,11 @@ class PostgresSearchTelemetry:
                     "candidate_depth": candidate_count,
                     "displayed": min(displayed_count, candidate_count),
                     "fusion": "rrf",
+                    "vector_backend": vector_backend,
                 },
             ),
         )
-        self.repository.record_candidates(
+        await self.repository.record_candidates(
             context.query_id,
             [
                 RankedCandidate(
@@ -213,7 +273,7 @@ class PostgresSearchTelemetry:
             ],
         )
         displayed_hits = hits[:displayed_count]
-        self.repository.record_impressions(
+        await self.repository.record_impressions(
             context.query_id,
             context.session_id,
             [
@@ -234,7 +294,7 @@ class PostgresSearchTelemetry:
                 for hit in displayed_hits
             ],
         )
-        self.repository.complete_query(
+        await self.repository.complete_query(
             context.query_id,
             candidate_count=candidate_count,
             result_count=len(displayed_hits),
@@ -242,7 +302,7 @@ class PostgresSearchTelemetry:
             latency_breakdown=timings,
         )
 
-    def fail(
+    async def fail(
         self,
         context: QueryTelemetryContext,
         *,
@@ -250,14 +310,14 @@ class PostgresSearchTelemetry:
         latency_ms: float,
         timings: dict[str, float],
     ) -> None:
-        self.repository.fail_query(
+        await self.repository.fail_query(
             context.query_id,
             error_type=error_type,
             latency_ms=latency_ms,
             latency_breakdown=timings,
         )
 
-    def feedback(
+    async def feedback(
         self,
         *,
         client_session_key: str,
@@ -265,7 +325,7 @@ class PostgresSearchTelemetry:
         artwork_id: str,
         grade: str,
     ) -> FeedbackTelemetryReceipt | None:
-        recorded = self.repository.record_relevance_feedback(
+        recorded = await self.repository.record_relevance_feedback(
             client_session_key=client_session_key,
             query_id=query_id,
             artwork_id=artwork_id,

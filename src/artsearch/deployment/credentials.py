@@ -80,6 +80,40 @@ def ensure_session_secret(
 ) -> tuple[Path, bool]:
     """Create a private session secret unless a sufficiently strong one exists."""
 
+    return _ensure_secret(
+        destination,
+        name="ARTSEARCH_SESSION_SECRET",
+        template=template,
+        minimum_bytes=minimum_bytes,
+    )
+
+
+def ensure_visitor_hash_secret(
+    destination: str | Path,
+    *,
+    template: str | Path = "deploy/alpha/.env.example",
+    minimum_bytes: int = 32,
+) -> tuple[Path, bool]:
+    """Create the stable local HMAC key used for pseudonymous visitor counts."""
+
+    return _ensure_secret(
+        destination,
+        name="ARTSEARCH_VISITOR_HASH_SECRET",
+        template=template,
+        minimum_bytes=minimum_bytes,
+    )
+
+
+def _ensure_secret(
+    destination: str | Path,
+    *,
+    name: str,
+    template: str | Path,
+    minimum_bytes: int,
+) -> tuple[Path, bool]:
+    if minimum_bytes < 16:
+        raise ValueError("minimum secret length must be at least 16 bytes")
+
     target = Path(destination)
     template_path = Path(template)
     source_text = (
@@ -87,17 +121,17 @@ def ensure_session_secret(
         if target.exists()
         else template_path.read_text(encoding="utf-8")
     )
-    existing = _env_value(source_text, "ARTSEARCH_SESSION_SECRET")
+    existing = _env_value(source_text, name)
     if len(existing.encode("utf-8")) >= minimum_bytes:
         target.chmod(0o600)
         return target, False
     if existing:
-        raise ValueError(f"existing ARTSEARCH_SESSION_SECRET is shorter than {minimum_bytes} bytes")
+        raise ValueError(f"existing {name} is shorter than {minimum_bytes} bytes")
 
     generated = secrets.token_urlsafe(max(48, minimum_bytes))
     written = _write_env_values(
         target,
-        {"ARTSEARCH_SESSION_SECRET": generated},
+        {name: generated},
         template=template_path,
     )
     return written, True

@@ -1,0 +1,93 @@
+version = "1.0.0"
+
+[sources]
+manual_seeds = true
+actor_search = true
+post_search = true
+starter_pack_search = true
+outbound_follows = true
+suggested_follows = true
+custom_feeds = false
+jetstream = false
+actor_queries = [
+  "independent illustrator",
+  "character artist",
+  "creature artist",
+  "comic artist",
+  "pixel artist",
+]
+post_queries = [
+  "my art",
+  "my OC",
+  "character design",
+  "finished commission",
+  "reference sheet",
+]
+starter_pack_queries = [
+  "digital artists",
+  "character artists",
+  "comic artists",
+  "creature artists",
+  "small artists",
+]
+
+[crawl]
+concurrency = 8
+max_depth = 2
+max_api_requests_per_run = 1000
+daily_creator_budget = 200
+daily_media_budget = 5000
+max_tasks_per_run = 500
+max_expansion_candidates_per_creator = 25
+max_outbound_follows_per_creator = 25
+max_suggested_follows_per_creator = 25
+max_starter_packs_per_query = 10
+max_list_members_per_pack = 100
+max_search_results_per_query = 50
+initial_media_sample = 25
+deep_media_sample = 100
+task_max_attempts = 3
+task_lease_seconds = 900
+retry_base_seconds = 30
+exploration_fraction = 0.15
+
+[qualification]
+minimum_evaluated_media = 5
+auto_qualify_score = 0.72
+reject_below_score = 0.30
+minimum_art_rate = 0.45
+minimum_accept_rate = 0.20
+review_reposts = true
+resample_after_days = 30
+reconsider_rejected_after_days = 90
+
+[scoring]
+version = "creator-score-v1"
+art_relevance_weight = 0.30
+portfolio_density_weight = 0.20
+visual_quality_weight = 0.15
+creator_identity_weight = 0.10
+source_reliability_weight = 0.10
+novelty_weight = 0.10
+activity_weight = 0.05
+repost_penalty_weight = 0.15
+popularity_penalty_weight = 0.03
+long_tail_bonus_weight = 0.05
+
+[safety]
+require_source_moderation = true
+block_profile_labels = [
+  "!hide",
+  "!no-unauthenticated",
+  "porn",
+  "sexual",
+  "nudity",
+  "graphic-media",
+  "gore",
+]
+review_profile_terms = ["18+", "adult art", "nsfw", "explicit", "porn", "yiff"]
+
+[retention]
+retain_rejected_image_bytes = false
+hot_event_days = 30
+archive_events_to_object_store = true

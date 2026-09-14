@@ -56,6 +56,7 @@ class HuggingFaceEmbeddingProvider:
             CLIPModel.from_pretrained,
             config.models.clip_model_name,
             revision=config.models.clip_model_version,
+            use_safetensors=False,
         ).to(self.device)
         self.csd_encoder = CSDStyleEncoder(config.models, self.device)
         self.clip_model.eval()
@@ -156,13 +157,13 @@ def _pooler_tensor(outputs):
     return outputs.last_hidden_state[:, 0, :]
 
 
-def _from_pretrained_cache_first(loader, model_name: str, *, revision: str):
+def _from_pretrained_cache_first(loader, model_name: str, *, revision: str, **kwargs):
     """Avoid network metadata checks when an exact pinned revision is cached."""
 
     try:
-        return loader(model_name, revision=revision, local_files_only=True)
+        return loader(model_name, revision=revision, local_files_only=True, **kwargs)
     except OSError:
-        return loader(model_name, revision=revision)
+        return loader(model_name, revision=revision, **kwargs)
 
 
 def _elapsed_ms(started: float) -> float:

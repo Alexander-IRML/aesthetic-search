@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import hashlib
@@ -17,6 +18,8 @@ from artsearch.embed.storage import blob_to_vector, l2_normalize
 from artsearch.ingest.config import AppConfig, ModelConfig
 from artsearch.ingest.db import init_db
 from artsearch.production.config import QdrantConfig
+from artsearch.retrieval.backend import SearchHit
+from artsearch.retrieval.corpus import eligible_embedding_rows
 
 
 POINT_NAMESPACE = uuid.UUID("f5270c98-c2f8-4b38-b5a2-cef92754210f")
@@ -65,22 +68,8 @@ class QdrantSyncResult:
         return asdict(self)
 
 
-@dataclass(frozen=True)
-class QdrantSearchHit:
-    artwork_id: str
-    artist_id: str
-    score: float
-    rank: int
-    content_class: str = "unknown"
-    fusion_score: float | None = None
-    fusion_rank: int | None = None
-    clip_score: float | None = None
-    clip_rank: int | None = None
-    style_score: float | None = None
-    style_rank: int | None = None
-
-    def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+# Compatibility name retained for callers and historical telemetry fixtures.
+QdrantSearchHit = SearchHit
 
 
 @dataclass(frozen=True)
@@ -129,6 +118,28 @@ def build_qdrant_client(config: QdrantConfig) -> Any:
     if url == ":memory:":
         return QdrantClient(location=":memory:")
     return QdrantClient(
+        url=url,
+        api_key=api_key,
+        prefer_grpc=config.prefer_grpc,
+        timeout=config.timeout_seconds,
+    )
+
+
+def build_async_qdrant_client(config: QdrantConfig) -> Any:
+    """Build the nonblocking client used by the online ASGI request path."""
+
+    if not config.enabled:
+        raise QdrantIntegrationError("Qdrant is disabled in the production configuration")
+    AsyncQdrantClient, _ = _async_qdrant_imports()
+    url = os.environ.get(config.url_env, "").strip() or config.url.strip()
+    if not url:
+        raise QdrantIntegrationError(f"Qdrant URL is missing; set {config.url_env} or qdrant.url")
+    api_key = os.environ.get(config.api_key_env, "").strip() or None
+    if config.require_api_key and api_key is None:
+        raise QdrantIntegrationError(f"Qdrant API key is missing from {config.api_key_env}")
+    if url == ":memory:":
+        return AsyncQdrantClient(location=":memory:")
+    return AsyncQdrantClient(
         url=url,
         api_key=api_key,
         prefer_grpc=config.prefer_grpc,
@@ -570,54 +581,17 @@ class QdrantSearchService:
         include_artist_id: str | None,
     ) -> list[QdrantSearchHit]:
         _, qmodels = _qdrant_imports()
-        query_filter = _search_filter(
+        requests = _fusion_requests(
             qmodels,
+            self.config,
+            clip,
+            style,
             exclude_artwork_id=exclude_artwork_id,
             exclude_artist_id=exclude_artist_id,
             include_artist_id=include_artist_id,
         )
-        params = qmodels.SearchParams(hnsw_ef=self.config.hnsw_ef)
-        clip_prefetch = qmodels.Prefetch(
-            query=clip.tolist(),
-            using=self.config.clip_vector_name,
-            filter=query_filter,
-            params=params,
-            limit=self.config.prefetch_limit,
-        )
-        style_prefetch = qmodels.Prefetch(
-            query=style.tolist(),
-            using=self.config.csd_vector_name,
-            filter=query_filter,
-            params=params,
-            limit=self.config.prefetch_limit,
-        )
-        requests = [
-            qmodels.QueryRequest(
-                query=clip.tolist(),
-                using=self.config.clip_vector_name,
-                filter=query_filter,
-                params=params,
-                limit=self.config.prefetch_limit,
-                with_payload=True,
-            ),
-            qmodels.QueryRequest(
-                query=style.tolist(),
-                using=self.config.csd_vector_name,
-                filter=query_filter,
-                params=params,
-                limit=self.config.prefetch_limit,
-                with_payload=True,
-            ),
-            qmodels.QueryRequest(
-                prefetch=[clip_prefetch, style_prefetch],
-                query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
-                filter=query_filter,
-                limit=self.config.fusion_limit,
-                with_payload=True,
-            ),
-        ]
         try:
-            clip_response, style_response, fused_response = self.client.query_batch_points(
+            responses = self.client.query_batch_points(
                 collection_name=self.config.alias_name,
                 requests=requests,
             )
@@ -625,30 +599,140 @@ class QdrantSearchService:
             raise QdrantIntegrationError(
                 f"Qdrant CLIP/CSD fusion search failed: {type(exc).__name__}: {exc}"
             ) from exc
+        return _fusion_hits(responses)
 
-        clip_evidence = _rank_evidence(clip_response.points)
-        style_evidence = _rank_evidence(style_response.points)
-        hits: list[QdrantSearchHit] = []
-        for fusion_rank, point in enumerate(fused_response.points, start=1):
-            artwork_id = _payload_text(point.payload, "artwork_id")
-            clip_score, clip_rank = clip_evidence.get(artwork_id, (None, None))
-            style_score, style_rank = style_evidence.get(artwork_id, (None, None))
-            hits.append(
-                QdrantSearchHit(
-                    artwork_id=artwork_id,
-                    artist_id=_payload_text(point.payload, "artist_id"),
-                    content_class=_payload_text(point.payload, "content_class", "unknown"),
-                    score=float(point.score),
-                    rank=fusion_rank,
-                    fusion_score=float(point.score),
-                    fusion_rank=fusion_rank,
-                    clip_score=clip_score,
-                    clip_rank=clip_rank,
-                    style_score=style_score,
-                    style_rank=style_rank,
-                )
+
+class AsyncQdrantSearchService:
+    """Async remote retrieval without occupying the bounded model worker."""
+
+    def __init__(self, client: Any, config: QdrantConfig) -> None:
+        self.client = client
+        self.config = config
+
+    async def search_by_vectors(
+        self,
+        clip_vector: np.ndarray,
+        style_vector: np.ndarray,
+        *,
+        top_k: int = 10,
+        artist_id: str | None = None,
+    ) -> list[QdrantSearchHit]:
+        if top_k <= 0:
+            raise ValueError("top_k must be positive")
+        clip = _validated_vector(clip_vector, self.config.clip_dimension)
+        style = _validated_vector(style_vector, self.config.csd_dimension)
+        _, qmodels = _async_qdrant_imports()
+        requests = _fusion_requests(
+            qmodels,
+            self.config,
+            clip,
+            style,
+            exclude_artwork_id=None,
+            exclude_artist_id=None,
+            include_artist_id=artist_id,
+        )
+        try:
+            responses = await self.client.query_batch_points(
+                collection_name=self.config.alias_name,
+                requests=requests,
             )
-        return hits
+        except Exception as exc:
+            raise QdrantIntegrationError(
+                f"Qdrant CLIP/CSD fusion search failed: {type(exc).__name__}: {exc}"
+            ) from exc
+        hits = _fusion_hits(responses)
+        max_per_artist = top_k if artist_id is not None else self.config.max_results_per_artist
+        return _apply_artist_diversity(hits, top_k, max_per_artist)
+
+
+def _fusion_requests(
+    qmodels: Any,
+    config: QdrantConfig,
+    clip: np.ndarray,
+    style: np.ndarray,
+    *,
+    exclude_artwork_id: str | None,
+    exclude_artist_id: str | None,
+    include_artist_id: str | None,
+) -> list[Any]:
+    query_filter = _search_filter(
+        qmodels,
+        exclude_artwork_id=exclude_artwork_id,
+        exclude_artist_id=exclude_artist_id,
+        include_artist_id=include_artist_id,
+    )
+    params = qmodels.SearchParams(hnsw_ef=config.hnsw_ef)
+    clip_prefetch = qmodels.Prefetch(
+        query=clip.tolist(),
+        using=config.clip_vector_name,
+        filter=query_filter,
+        params=params,
+        limit=config.prefetch_limit,
+    )
+    style_prefetch = qmodels.Prefetch(
+        query=style.tolist(),
+        using=config.csd_vector_name,
+        filter=query_filter,
+        params=params,
+        limit=config.prefetch_limit,
+    )
+    return [
+        qmodels.QueryRequest(
+            query=clip.tolist(),
+            using=config.clip_vector_name,
+            filter=query_filter,
+            params=params,
+            limit=config.prefetch_limit,
+            with_payload=True,
+        ),
+        qmodels.QueryRequest(
+            query=style.tolist(),
+            using=config.csd_vector_name,
+            filter=query_filter,
+            params=params,
+            limit=config.prefetch_limit,
+            with_payload=True,
+        ),
+        qmodels.QueryRequest(
+            prefetch=[clip_prefetch, style_prefetch],
+            query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
+            filter=query_filter,
+            limit=config.fusion_limit,
+            with_payload=True,
+        ),
+    ]
+
+
+def _fusion_hits(responses: Sequence[Any]) -> list[QdrantSearchHit]:
+    if len(responses) != 3:
+        raise QdrantIntegrationError(
+            f"Qdrant fusion returned {len(responses)} response sets; expected 3"
+        )
+    clip_response, style_response, fused_response = responses
+
+    clip_evidence = _rank_evidence(clip_response.points)
+    style_evidence = _rank_evidence(style_response.points)
+    hits: list[QdrantSearchHit] = []
+    for fusion_rank, point in enumerate(fused_response.points, start=1):
+        artwork_id = _payload_text(point.payload, "artwork_id")
+        clip_score, clip_rank = clip_evidence.get(artwork_id, (None, None))
+        style_score, style_rank = style_evidence.get(artwork_id, (None, None))
+        hits.append(
+            QdrantSearchHit(
+                artwork_id=artwork_id,
+                artist_id=_payload_text(point.payload, "artist_id"),
+                content_class=_payload_text(point.payload, "content_class", "unknown"),
+                score=float(point.score),
+                rank=fusion_rank,
+                fusion_score=float(point.score),
+                fusion_rank=fusion_rank,
+                clip_score=clip_score,
+                clip_rank=clip_rank,
+                style_score=style_score,
+                style_rank=style_rank,
+            )
+        )
+    return hits
 
 
 def validate_qdrant_read_alias(
@@ -678,98 +762,47 @@ def validate_qdrant_read_alias(
         )
 
 
+async def validate_qdrant_read_alias_async(
+    client: Any,
+    config: QdrantConfig,
+    models: ModelConfig,
+) -> None:
+    """Validate the serving collection without blocking application startup I/O."""
+
+    try:
+        info, alias_response = await asyncio.gather(
+            client.get_collection(config.collection_name),
+            client.get_aliases(),
+        )
+        _validate_collection_schema(info, config, models)
+        aliases = {alias.alias_name: alias.collection_name for alias in alias_response.aliases}
+    except QdrantIntegrationError:
+        raise
+    except Exception as exc:
+        raise QdrantIntegrationError(
+            f"could not validate Qdrant read alias: {type(exc).__name__}: {exc}"
+        ) from exc
+    target = aliases.get(config.alias_name)
+    if target != config.collection_name:
+        raise QdrantIntegrationError(
+            f"Qdrant alias {config.alias_name!r} targets {target!r}, "
+            f"expected {config.collection_name!r}"
+        )
+
+
 def _eligible_rows(
     connection: sqlite3.Connection,
     app_config: AppConfig,
     config: QdrantConfig,
 ) -> sqlite3.Cursor:
-    return connection.execute(
-        """
-        WITH decision_links AS (
-            SELECT r.artwork_id,
-                   d.decision_key,
-                   d.decision,
-                   d.accepted_for_main_corpus,
-                   d.predicted_class,
-                   d.processed_at,
-                   0 AS link_priority
-              FROM artwork_filter_routes AS r
-              JOIN artwork_filter_decisions AS d
-                ON d.decision_key = r.decision_key
-             WHERE r.artwork_id IS NOT NULL
-            UNION ALL
-            SELECT a.artwork_id,
-                   d.decision_key,
-                   d.decision,
-                   d.accepted_for_main_corpus,
-                   d.predicted_class,
-                   d.processed_at,
-                   1 AS link_priority
-              FROM artworks AS a
-              JOIN artwork_filter_decisions AS d
-                ON d.candidate_id = a.source_id
-             WHERE a.source_platform = 'bluesky'
-        ),
-        ranked_decisions AS (
-            SELECT decision_links.*,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY artwork_id
-                       ORDER BY processed_at DESC, decision_key DESC, link_priority
-                   ) AS decision_rank
-              FROM decision_links
-        )
-        SELECT a.artwork_id,
-               a.artist_id,
-               a.source_platform,
-               a.review_status,
-               a.is_sfw,
-               a.demo_eligible,
-               a.date_added,
-               e.clip_vector,
-               e.clip_dim,
-               e.csd_style,
-               e.csd_style_dim,
-               e.date_computed,
-               COALESCE(d.predicted_class, 'unknown') AS content_class,
-               d.decision AS filter_decision,
-               state.content_hash AS indexed_content_hash
-          FROM artworks AS a
-          JOIN embeddings AS e ON e.artwork_id = a.artwork_id
-          LEFT JOIN ranked_decisions AS d
-            ON d.artwork_id = a.artwork_id AND d.decision_rank = 1
-          LEFT JOIN vector_index_points AS state
-            ON state.artwork_id = a.artwork_id AND state.collection_name = ?
-         WHERE a.validated = 1
-           AND a.processed_path IS NOT NULL
-           AND a.duplicate_of IS NULL
-           AND a.demo_eligible = 1
-           AND (? = 0 OR a.is_sfw = 1)
-           AND (
-               ? = 0
-               OR a.source_platform != 'bluesky'
-               OR (d.decision = 'accept' AND d.accepted_for_main_corpus = 1)
-           )
-           AND e.clip_vector IS NOT NULL
-           AND e.csd_style IS NOT NULL
-           AND e.clip_dim = ?
-           AND e.csd_style_dim = ?
-           AND e.model_name_clip = ?
-           AND e.model_version_clip = ?
-           AND e.model_name_csd = ?
-           AND e.model_version_csd = ?
-         ORDER BY a.artwork_id
-        """,
-        (
-            config.collection_name,
-            int(config.require_sfw),
-            int(config.require_bluesky_accept),
-            config.clip_dimension,
-            config.csd_dimension,
-            app_config.models.clip_model_name,
-            app_config.models.clip_model_version,
-            app_config.models.csd_model_name,
-            app_config.models.csd_model_version,
-        ),
+    return eligible_embedding_rows(
+        connection,
+        app_config.models,
+        clip_dimension=config.clip_dimension,
+        csd_dimension=config.csd_dimension,
+        require_sfw=config.require_sfw,
+        require_bluesky_accept=config.require_bluesky_accept,
+        state_collection=config.collection_name,
     )
 
 
@@ -1149,3 +1182,13 @@ def _qdrant_imports() -> tuple[Any, Any]:
             "Qdrant integration requires: pip install -e '.[qdrant]'"
         ) from exc
     return QdrantClient, models
+
+
+def _async_qdrant_imports() -> tuple[Any, Any]:
+    try:
+        from qdrant_client import AsyncQdrantClient, models
+    except ImportError as exc:
+        raise QdrantIntegrationError(
+            "Qdrant integration requires: pip install -e '.[qdrant]'"
+        ) from exc
+    return AsyncQdrantClient, models

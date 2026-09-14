@@ -31,6 +31,10 @@ def test_default_scheduler_targets_five_thousand_candidates():
     assert config.require_ac_power is True
     assert config.production_config == Path("configs/production.default.toml")
     assert config.filter_config == Path("configs/artwork_filter.default.toml")
+    assert config.discovery_enabled is False
+    assert config.discovery_config == Path("configs/discovery.default.toml")
+    assert config.discovery_creator_budget == 200
+    assert config.discovery_max_tasks == 500
 
 
 def test_bulk_scheduler_targets_private_csv_and_twenty_thousand_candidates():
@@ -45,6 +49,9 @@ def test_bulk_scheduler_targets_private_csv_and_twenty_thousand_candidates():
     assert config.production_config == Path("configs/production.alpha-cloud.local.toml")
     assert config.filter_config == Path("configs/artwork_filter.bulk.toml")
     assert config.run_timeout_seconds == 129600
+    assert config.discovery_enabled is False
+    assert config.discovery_creator_budget == 500
+    assert config.discovery_max_tasks == 2000
 
 
 def test_due_window_is_closed_after_fifteen_minutes():

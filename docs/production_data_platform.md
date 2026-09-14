@@ -148,14 +148,13 @@ Neither config template nor application logging contains credentials.
 
 ## Airflow Development Stack
 
-Airflow and Spark are isolated from the Python 3.14 ML environment. The image
-uses Airflow 3.3 on Python 3.12, Java 17, PySpark 4.2, Polars, s3fs, the pinned
-ML dependencies, and qdrant-client. The development Compose stack also runs a
-pinned single-node Qdrant service with rebuildable storage under `data/qdrant/`.
-PyTorch and torchvision are installed from the CPU-only wheel index in this
-local image. This avoids carrying CUDA 13 packages on a workstation with no
-visible NVIDIA device; a future GPU worker image should be a separate,
-benchmarked deployment target.
+Airflow and Spark are isolated in their own orchestration image while sharing
+the project's Python 3.12 ABI. The image uses Airflow 3.3 on Python 3.12, Java
+17, PySpark 4.2, Polars, s3fs, the pinned ML dependencies, and qdrant-client.
+The development Compose stack also runs a pinned single-node Qdrant service
+with rebuildable storage under `data/qdrant/`. PyTorch and torchvision are
+installed from the CPU-only wheel index in both local bootstrap and this image;
+a future GPU worker image should be a separate, benchmarked deployment target.
 
 ```bash
 AIRFLOW_UID="$(id -u)" docker compose \

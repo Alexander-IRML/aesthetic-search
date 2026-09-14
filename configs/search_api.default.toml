@@ -1,6 +1,7 @@
 version = "1.0.0"
 host = "127.0.0.1"
 port = 8000
+vector_backend = "qdrant"
 
 # The local web surface enriches Qdrant IDs from the private SQLite staging DB
 # and serves only catalog-approved processed images through a controlled route.
@@ -17,6 +18,7 @@ allowed_mime_types = ["image/jpeg", "image/png", "image/webp"]
 
 # One CPU model owner prevents overlapping CSD/CLIP jobs from exhausting RAM.
 max_concurrent_inferences = 1
+max_pending_inferences = 2
 inference_queue_timeout_seconds = 2.0
 inference_timeout_seconds = 120.0
 
@@ -27,3 +29,4 @@ rate_limit_window_seconds = 60
 feedback_rate_limit_requests = 120
 feedback_rate_limit_window_seconds = 60
 trust_proxy_headers = false
+visitor_hash_secret_env = "ARTSEARCH_VISITOR_HASH_SECRET"

@@ -6,7 +6,10 @@ import uuid
 from sqlalchemy.dialects import postgresql
 
 from artsearch.ingest.config import ModelConfig
-from artsearch.postgres.model_lineage import model_bundle_record
+from artsearch.postgres.model_lineage import (
+    configured_model_bundle_record,
+    model_bundle_record,
+)
 from artsearch.postgres.repositories import OutboxRepository
 from artsearch.production.config import QdrantConfig
 
@@ -97,6 +100,30 @@ def test_model_bundle_lineage_matches_qdrant_contract() -> None:
     assert record["metadata"]["qdrant_collection"] == qdrant.collection_name
 
 
+def test_configured_model_bundle_uses_faiss_for_scale_profile() -> None:
+    from artsearch.production.config import ProductionConfig
+
+    models = ModelConfig(
+        clip_model_name="clip",
+        clip_model_version="clip-revision",
+        csd_model_name="csd",
+        csd_model_version="csd-revision",
+        csd_model_filename="model.safetensors",
+        csd_model_sha256="0" * 64,
+        csd_processor_name="processor",
+        csd_processor_version="processor-revision",
+    )
+    production = ProductionConfig.model_validate(
+        {"qdrant": {"enabled": False}, "faiss": {"enabled": True}}
+    )
+
+    record = configured_model_bundle_record(models, production)
+
+    assert record["metadata"]["vector_backend"] == "faiss"
+    assert record["clip_dimension"] == 512
+    assert record["csd_dimension"] == 768
+
+
 def test_browser_session_resolution_uses_postgres_upsert() -> None:
     from artsearch.postgres.repositories import TelemetryRepository
 
@@ -109,3 +136,4 @@ def test_browser_session_resolution_uses_postgres_upsert() -> None:
     assert str(session_id) == "01922222-2222-7222-8222-222222222222"
     assert "ON CONFLICT (client_session_key) DO UPDATE" in compiled
     assert "last_seen_at" in compiled
+    assert "client_metadata || excluded.client_metadata" in compiled

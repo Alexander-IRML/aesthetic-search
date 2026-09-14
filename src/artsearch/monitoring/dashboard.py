@@ -335,6 +335,100 @@ _TEMPLATE = r"""<!doctype html>
       font-size: 11px;
       white-space: pre-wrap;
     }
+    .control-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(300px, 1fr));
+      gap: 10px;
+    }
+    .control-form { display: grid; gap: 11px; }
+    .control-fields {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(90px, 1fr));
+      gap: 8px;
+    }
+    .control-fields label {
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    input[type="number"] {
+      width: 100%;
+      min-height: 34px;
+      border: 1px solid var(--line-strong);
+      border-radius: 5px;
+      padding: 5px 8px;
+      color: var(--text);
+      background: var(--panel);
+    }
+    .corpus-map-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 3fr) minmax(250px, 1fr);
+      min-height: 540px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel);
+    }
+    .corpus-map-stage {
+      position: relative;
+      min-height: 540px;
+      overflow: hidden;
+      background: #f0f4ef;
+    }
+    #corpus-graph { display: block; width: 100%; height: 540px; cursor: crosshair; }
+    .map-legend {
+      position: absolute;
+      left: 10px;
+      bottom: 10px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 6px 8px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.94);
+      font-size: 10px;
+    }
+    .legend-dot { display: inline-block; width: 8px; height: 8px; margin-right: 4px; border-radius: 50%; }
+    .corpus-map-detail {
+      min-width: 0;
+      padding: 13px;
+      border-left: 1px solid var(--line);
+      background: var(--panel);
+    }
+    .corpus-map-detail h3 { overflow-wrap: anywhere; font-size: 14px; }
+    .post-key-list {
+      max-height: 335px;
+      overflow: auto;
+      margin-top: 10px;
+      border: 1px solid var(--line);
+      background: var(--panel-soft);
+    }
+    .post-key-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 6px 7px;
+      border-bottom: 1px solid var(--line);
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 10px;
+    }
+    .post-key-row:last-child { border-bottom: 0; }
+    .job-band {
+      margin-top: 10px;
+      padding: 11px;
+      border: 1px solid var(--line);
+      border-left-width: 4px;
+      background: var(--panel);
+    }
+    .job-band.running { border-left-color: var(--blue); }
+    .job-band.succeeded { border-left-color: var(--green); }
+    .job-band.failed, .job-band.interrupted { border-left-color: var(--red); }
+    .job-summary { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
     @media (max-width: 1100px) {
       .app-header { grid-template-columns: 1fr auto; }
       .tabs { grid-column: 1 / -1; order: 3; overflow-x: auto; }
@@ -342,6 +436,7 @@ _TEMPLATE = r"""<!doctype html>
       .funnel { grid-template-columns: repeat(3, 1fr); }
       .model-grid { grid-template-columns: 1fr; }
       .retrieval-grid { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
+      .corpus-map-layout { grid-template-columns: minmax(0, 1fr) 280px; }
     }
     @media (max-width: 700px) {
       .app-header { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 10px 12px; }
@@ -358,6 +453,9 @@ _TEMPLATE = r"""<!doctype html>
       .review-layout, .retrieval-query { grid-template-columns: 1fr; }
       .review-media-shell { min-height: 320px; }
       .field-grid, .retrieval-grid { grid-template-columns: 1fr; }
+      .control-grid, .control-fields, .corpus-map-layout { grid-template-columns: 1fr; }
+      .corpus-map-detail { border-top: 1px solid var(--line); border-left: 0; }
+      .corpus-map-stage, #corpus-graph { min-height: 390px; height: 390px; }
       .section-heading { align-items: flex-start; flex-direction: column; gap: 3px; }
       .bar-row { grid-template-columns: minmax(100px, 0.8fr) 2fr 42px; gap: 6px; }
     }
@@ -373,11 +471,19 @@ _TEMPLATE = r"""<!doctype html>
       <button class="tab" data-tab="overview" aria-selected="true">Overview</button>
       <button class="tab" data-tab="quality" aria-selected="false">Model quality</button>
       <button class="tab" data-tab="data" aria-selected="false">Data &amp; drift</button>
+      <button class="tab" data-tab="discovery" aria-selected="false">Discovery</button>
       <button class="tab" data-tab="operations" aria-selected="false">Operations</button>
       <button class="tab" data-tab="review" aria-selected="false">Review &amp; feedback</button>
     </nav>
     <div class="header-actions">
       <span id="header-status" class="status-pill info">Loading</span>
+      <button
+        id="run-intake-placeholder"
+        class="button"
+        type="button"
+        data-operator-action="run-intake"
+        title="Open corpus intake controls"
+      >Corpus intake</button>
       <a class="button" href="/api/snapshot?download=1">Export JSON</a>
       <button id="refresh" class="button primary" aria-label="Refresh snapshot" title="Refresh snapshot">Refresh</button>
     </div>
@@ -387,17 +493,28 @@ _TEMPLATE = r"""<!doctype html>
     "use strict";
     let snapshot = null;
     const reviewToken = __ARTSEARCH_REVIEW_TOKEN__;
-    const validTabs = new Set(["overview", "quality", "data", "operations", "review"]);
+    const validTabs = new Set(["overview", "quality", "data", "discovery", "operations", "review"]);
     let activeTab = validTabs.has(location.hash.slice(1)) ? location.hash.slice(1) : "overview";
     let refreshTimer = null;
     let reviewSummary = null;
     let filterReview = null;
     let retrievalReview = null;
-    let reviewWorkspace = new URLSearchParams(location.search).get("workspace") === "retrieval" ? "retrieval" : "filter";
+    const requestedWorkspace = new URLSearchParams(location.search).get("workspace");
+    let reviewWorkspace = ["filter", "retrieval", "discovery"].includes(requestedWorkspace) ? requestedWorkspace : "filter";
     let filterDecision = "all";
     let filterLabelStatus = "unlabeled";
     let filterOffset = 0;
     let retrievalMode = "ensemble";
+    let discoveryReview = null;
+    let discoveryState = "needs_review";
+    let discoveryOffset = 0;
+    let corpusGraph = null;
+    let controlJob = null;
+    let controlLoading = false;
+    let controlMessage = "";
+    let selectedArtistIndex = 0;
+    let controlPollTimer = null;
+    let corpusGraphPositions = [];
     let reviewMessage = "";
     let reviewLoading = false;
     const revealedMedia = new Set();
@@ -453,6 +570,7 @@ _TEMPLATE = r"""<!doctype html>
       const evidence = s.monitoring.evidence_coverage;
       const search = s.product?.search || {};
       const feedback = s.product?.feedback || {};
+      const visitors = s.product?.visitors || {};
       return `
         <section class="summary-band" data-level="${esc(level)}">
           <div><h2>${level === "healthy" ? "All configured checks pass" : "Maintenance attention is required"}</h2>
@@ -462,10 +580,12 @@ _TEMPLATE = r"""<!doctype html>
         <div class="metrics-grid">
           ${metric("Searchable corpus", number(s.corpus.searchable), `${number(s.corpus.artists)} artists`)}
           ${metric("Searches executed", number(search.total_searches), `${number(search.searches_last_24h)} in the last 24h`)}
+          ${metric("Unique demo IPs", number(visitors.total_unique_ips), `${number(visitors.unique_ips_last_24h)} in the last 24h`)}
           ${metric("Search p95", ms(search.latency_p95_ms), `${number(s.product?.window_days)} day window`)}
           ${metric("Online P@10", pct(feedback.precision_at_10), `${number(feedback.fully_judged_queries)} complete queries`)}
           ${metric("Global embeddings", pct(s.embeddings.global_coverage), `${number(s.embeddings.current_complete)} current rows`)}
           ${metric("Latest decisions", number(s.filtering.latest_decisions), `${number(s.filtering.artists)} artists`)}
+          ${metric("Discovered creators", number(s.discovery?.creators), `${number(s.discovery?.creator_states?.qualified || 0)} qualified`)}
           ${metric("Filter p95", ms(s.filtering.latency_ms.p95), `target <= ${ms(s.monitoring.targets.filter_p95_latency_ms)}`)}
           ${metric("Serving eligible", number(s.corpus.serving_eligible), `${number(s.corpus.demo_eligible)} demo approved`)}
           ${metric("Evaluation evidence", `${Object.values(evidence).filter(Boolean).length}/3`, "filter, retrieval, ANN")}
@@ -630,10 +750,164 @@ _TEMPLATE = r"""<!doctype html>
       return `<div class="model-card"><h3>${esc(name)}</h3><dl>${Object.entries(item).map(([key, value]) => `<dt>${esc(key.replaceAll("_", " "))}</dt><dd class="${String(value).length > 24 ? "mono" : ""}">${esc(value)}</dd>`).join("")}</dl></div>`;
     }
 
+    function postDecisionLabel(mask) {
+      const labels = [];
+      if (mask & 1) labels.push("accept");
+      if (mask & 2) labels.push("review");
+      if (mask & 4) labels.push("reject");
+      if (mask & 8) labels.push("error");
+      return labels.join("/") || "unknown";
+    }
+
+    function renderSelectedArtist() {
+      if (!corpusGraph?.artists?.length) return `<div class="empty">No Bluesky artists are present in the local corpus.</div>`;
+      const artist = corpusGraph.artists[Math.min(selectedArtistIndex, corpusGraph.artists.length - 1)];
+      const index = corpusGraph.artists.indexOf(artist);
+      const postRows = (corpusGraph.posts || []).filter(row => row[0] === index);
+      return `<h3>${esc(artist.display_name || artist.handle || artist.key)}</h3>
+        <p class="metric-note" style="margin-top:4px">${artist.handle ? `@${esc(artist.handle)}` : "No handle"}</p>
+        <dl>
+          <dt>Artist key</dt><dd class="mono">${esc(artist.key)}</dd>
+          <dt>Corpus</dt><dd>${artist.in_corpus ? "accepted corpus artist" : "discovery candidate"}</dd>
+          <dt>State</dt><dd>${esc(humanize(artist.state || "unknown"))}</dd>
+          <dt>Artworks</dt><dd>${number(artist.artworks)}</dd>
+          <dt>Pulled posts</dt><dd>${number(artist.posts)}</dd>
+          <dt>Graph depth</dt><dd>${number(artist.depth)}</dd>
+          <dt>Last pull</dt><dd>${esc(formatDate(artist.last_pulled_at))}</dd>
+          <dt>DID</dt><dd class="mono">${esc(artist.did || "not resolved")}</dd>
+        </dl>
+        <div class="metric-label" style="margin-top:13px">Pulled post keys</div>
+        <div class="post-key-list">${postRows.length ? postRows.map(row => `
+          <div class="post-key-row"><span>${esc(row[1])}</span><span title="${esc(postDecisionLabel(row[3]))}">${number(row[2])} img · ${esc(postDecisionLabel(row[3]))}</span></div>`).join("") : `<div class="empty">No pulled post keys for this node.</div>`}</div>`;
+    }
+
+    function renderControlJob() {
+      const job = controlJob?.job;
+      if (!job) return `<div class="job-band"><strong>No dashboard job has run yet.</strong><p class="metric-note">Jobs run one at a time and survive in the local audit directory.</p></div>`;
+      const state = job.state || "unknown";
+      const values = Object.entries(job.summary || {}).filter(([, value]) => ["string", "number", "boolean"].includes(typeof value)).slice(0, 12);
+      const parameters = Object.entries(job.parameters || {});
+      return `<div class="job-band ${esc(state)}">
+        <div class="decision-header"><div><strong>${esc(humanize(job.kind))} · ${esc(job.job_id)}</strong>
+          <p>${esc(job.message || "")}</p></div>${tag(state, state === "succeeded" ? "healthy" : state === "failed" || state === "interrupted" ? "critical" : "info")}</div>
+        <div class="job-summary">
+          ${job.elapsed_seconds != null ? tag(`${decimal(job.elapsed_seconds, 1)} sec`, "info") : ""}
+          ${parameters.map(([key, value]) => tag(`${humanize(key)} ${value}`, "info")).join("")}
+          ${values.map(([key, value]) => tag(`${humanize(key)} ${value}`, "healthy")).join("")}
+        </div>
+      </div>`;
+    }
+
+    function renderCorpusControl() {
+      if (!reviewToken) return `<div class="empty">Corpus controls are available only from the localhost dashboard.</div>`;
+      if (controlLoading && !corpusGraph) return `<div class="loading">Building the local artist and post graph...</div>`;
+      if (!corpusGraph) return `<div class="empty">${esc(controlMessage || "Corpus graph has not loaded.")}</div>`;
+      const counts = corpusGraph.counts || {};
+      const active = Boolean(controlJob?.active);
+      const discovery = corpusGraph.discovery || {};
+      return `
+        <div class="metrics-grid">
+          ${metric("Corpus artists", number(counts.corpus_artists), `${number(counts.discovered_artists)} candidates outside corpus`)}
+          ${metric("Pulled post keys", number(counts.posts), "compact hashes over canonical AT URIs")}
+          ${metric("Accepted artworks", number(counts.artworks), "local canonical SQLite")}
+          ${metric("Creator edges", number(counts.edges), esc(discovery.status || "unknown"))}
+          ${metric("Control job", active ? tag("Running", "info") : tag(controlJob?.job?.state || "Idle", controlJob?.job?.state === "failed" ? "critical" : "healthy"), controlJob?.job?.job_id || "no prior job")}
+          ${metric("Graph source", tag(discovery.status || "local", discovery.status === "online" ? "healthy" : "warning"), discovery.message || "PostgreSQL relationships available")}
+        </div>
+        <div class="corpus-map-layout" style="margin-top:10px">
+          <div class="corpus-map-stage">
+            <canvas id="corpus-graph" aria-label="Artist and pulled-post cluster graph"></canvas>
+            <div class="map-legend">
+              <span><i class="legend-dot" style="background:var(--green)"></i>in corpus</span>
+              <span><i class="legend-dot" style="background:var(--blue)"></i>discovered</span>
+              <span><i class="legend-dot" style="background:var(--amber)"></i>post keys</span>
+              <span>click an artist node to inspect</span>
+            </div>
+          </div>
+          <aside id="corpus-artist-detail" class="corpus-map-detail">${renderSelectedArtist()}</aside>
+        </div>
+        <div class="control-grid" style="margin-top:10px">
+          <div class="panel"><h3>Pull missing posts</h3>
+            <form id="corpus-refresh-form" class="control-form">
+              <div class="control-fields">
+                <label>New image cap<input name="max_new_images" type="number" min="1" max="5000" value="500"></label>
+                <label>Pages / artist<input name="max_pages_per_artist" type="number" min="1" max="20" value="2"></label>
+                <label>Images / artist<input name="max_images_per_artist" type="number" min="1" max="100" value="20"></label>
+              </div>
+              <div class="control-fields">
+                <label>Artist scan cap<input name="artist_limit" type="number" min="1" max="5000" value="${Math.max(1, counts.corpus_artists || 1)}"></label>
+              </div>
+              <button class="button primary" type="submit" ${active || !corpusGraph.controls?.can_refresh ? "disabled" : ""}>Pull unscanned posts</button>
+            </form>
+          </div>
+          <div class="panel"><h3>Grow creator graph</h3>
+            <form id="corpus-expand-form" class="control-form">
+              <div class="control-fields">
+                <label>Steps out<input name="depth" type="number" min="1" max="3" value="1"></label>
+                <label>Bluesky query cap<input name="request_budget" type="number" min="1" max="2000" value="100"></label>
+              </div>
+              <button class="button primary" type="submit" ${active || !corpusGraph.controls?.can_expand ? "disabled" : ""}>Expand similar accounts</button>
+            </form>
+          </div>
+        </div>
+        ${renderControlJob()}
+        <div class="review-message" style="margin-top:8px">${esc(controlMessage)}</div>`;
+    }
+
+    function renderDiscovery(s) {
+      const d = s.discovery || {};
+      const coverage = d.latest_coverage?.dimensions || {};
+      const campaignRows = d.campaigns || [];
+      const latestCampaignMetrics = campaignRows[0]?.metrics || {};
+      const distribution = values => Object.entries(values || {}).map(([label, count]) => ({label, count}));
+      return `
+        <section class="summary-band" data-level="${d.status === "online" ? "healthy" : "warning"}">
+          <div><h2>Corpus discovery control plane</h2>
+          <p>Provenance-preserving creator discovery, qualification, and bounded graph expansion.</p></div>
+          ${tag(d.status || "unknown", d.status === "online" ? "healthy" : "warning")}
+        </section>
+        <div class="metrics-grid">
+          ${metric("Creator candidates", number(d.creators), `${number(d.creator_states?.qualified || 0)} qualified`)}
+          ${metric("Provenance observations", number(d.observations), "independent discovery paths")}
+          ${metric("Graph edges", number(d.edges), "typed relationships")}
+          ${metric("Pending frontier", number((d.frontier_states?.pending || 0) + (d.frontier_states?.retry || 0)), `${number(d.frontier_states?.leased || 0)} leased`)}
+          ${metric("Needs review", number(d.creator_states?.needs_review || 0), `${number(d.creator_states?.deferred || 0)} deferred`)}
+          ${metric("Active exclusions", number(d.active_exclusions), `${number(d.open_removal_requests)} open removals`)}
+          ${metric("Duplicate creator IDs", number(latestCampaignMetrics.duplicate_creator_ids), `${number(latestCampaignMetrics.duplicate_expansion_account_ids)} from graph expansion`)}
+          ${metric("Expansion fan-out", number(latestCampaignMetrics.expansion_candidates_added), `${number(latestCampaignMetrics.expansion_nodes_at_limit)} nodes reached the 25-account cap`)}
+        </div>
+        ${section("Corpus map and intake controls", "Local corpus identity plus PostgreSQL discovery relationships")}
+        <div id="corpus-control">${renderCorpusControl()}</div>
+        ${section("Creator and safety state", "Creator qualification and source-policy outcomes remain separate")}
+        <div class="split">
+          <div class="panel"><h3>Creator states</h3>${bars(distribution(d.creator_states), "var(--blue)")}</div>
+          <div class="panel"><h3>Safety states</h3>${bars(distribution(d.safety_states), "var(--amber)")}</div>
+        </div>
+        ${section("Crawl frontier", "Leased, idempotent work ordered by expansion score and bounded budgets")}
+        <div class="split">
+          <div class="panel"><h3>Task states</h3>${bars(distribution(d.frontier_states), "var(--green)")}</div>
+          <div class="panel"><h3>Task actions</h3>${bars(distribution(d.frontier_actions), "var(--blue)")}</div>
+        </div>
+        ${section("Discovery source yield", "Raw observation yield; creator qualification remains an independent decision")}
+        <div class="table-wrap"><table><thead><tr><th>Source</th><th>Observations</th></tr></thead><tbody>
+          ${rows(d.source_yield, "No discovery observations yet.", item => `<tr><td>${esc(humanize(item.source_type))}</td><td>${number(item.observations)}</td></tr>`)}
+        </tbody></table></div>
+        ${section("Latest coverage snapshot", "Cheap dimensions are available now; visual-cluster novelty remains explicitly unmeasured")}
+        <div class="split">
+          <div class="panel"><h3>Popularity bands</h3>${bars(distribution(coverage.popularity_bands), "var(--amber)")}</div>
+          <div class="panel"><h3>Graph depth</h3>${bars(distribution(coverage.graph_depths), "var(--green)")}</div>
+        </div>
+        ${section("Recent campaigns")}
+        <div class="table-wrap"><table><thead><tr><th>Name</th><th>State</th><th>Started</th><th>Finished</th><th>Config</th></tr></thead><tbody>
+          ${rows(campaignRows, "No discovery campaigns have run.", item => `<tr><td>${esc(item.name)}</td><td>${tag(item.state, item.state === "completed" ? "healthy" : item.state === "failed" ? "critical" : "info")}</td><td>${esc(formatDate(item.started_at))}</td><td>${esc(formatDate(item.finished_at))}</td><td class="mono">${short(item.config_hash)}</td></tr>`)}
+        </tbody></table></div>`;
+    }
+
     function renderOperations(s) {
       const scheduler = s.operations.scheduler || {};
       const sourceState = s.operations.source_state || {};
       const search = s.product?.search || {};
+      const visitors = s.product?.visitors || {};
       const pipeline = s.operations.pipeline_success || {};
       const postgresPipeline = pipeline.postgres || {};
       return `
@@ -649,6 +923,7 @@ _TEMPLATE = r"""<!doctype html>
         <div class="metrics-grid">
           ${metric("Telemetry", tag(s.product?.status || "disabled", s.product?.status === "online" ? "healthy" : "warning"), s.product?.error || "aggregate-only")}
           ${metric("Total searches", number(search.total_searches), `${number(search.searches_last_24h)} in 24h`)}
+          ${metric("Unique demo IPs", number(visitors.total_unique_ips), `${number(visitors.window_unique_ips)} in window; hashed only`)}
           ${metric("Search success", pct(search.success_rate), `${number(search.window_completed)} completed`)}
           ${metric("Search errors", pct(search.error_rate), `${number(search.window_errors)} failed`)}
           ${metric("Search p50", ms(search.latency_p50_ms), "total request latency")}
@@ -691,9 +966,10 @@ _TEMPLATE = r"""<!doctype html>
     }
 
     const humanize = value => String(value || "").replaceAll("_", " ").replace(/\b\w/g, char => char.toUpperCase());
-    const reviewMediaUrl = (kind, id) => `/api/review/media/${kind}?${new URLSearchParams({
-      token: reviewToken, [kind === "filter" ? "candidate_id" : "artwork_id"]: id
-    })}`;
+    const reviewMediaUrl = (kind, id) => {
+      const idName = kind === "artwork" ? "artwork_id" : "candidate_id";
+      return `/api/review/media/${kind}?${new URLSearchParams({token: reviewToken, [idName]: id})}`;
+    };
     const reviewSelect = (name, values, selected, placeholder) => `
       <select name="${esc(name)}" required>
         <option value="">${esc(placeholder)}</option>
@@ -822,15 +1098,74 @@ _TEMPLATE = r"""<!doctype html>
         <div class="review-message" style="margin-top:9px">${esc(reviewMessage)}</div>`;
     }
 
+    function renderDiscoveryWorkspace() {
+      const enabled = reviewSummary?.discovery?.enabled;
+      const controls = `<div class="review-controls"><div class="review-actions">
+        <label>Creator state<select id="discovery-state">
+          ${["needs_review", "deferred", "qualified", "rejected", "blocked", "all"].map(value => `<option value="${value}" ${value === discoveryState ? "selected" : ""}>${humanize(value)}</option>`).join("")}
+        </select></label>
+      </div><div class="review-actions">
+        <button class="button" data-review-action="discovery-prev" ${!discoveryReview?.offset ? "disabled" : ""}>Previous</button>
+        <span class="mono">${discoveryReview?.total ? `${number(discoveryReview.offset + 1)} / ${number(discoveryReview.total)}` : "0 / 0"}</span>
+        <button class="button" data-review-action="discovery-next" ${!discoveryReview?.total || discoveryReview.offset >= discoveryReview.total - 1 ? "disabled" : ""}>Next</button>
+      </div></div>`;
+      if (!enabled) return controls + `<div class="empty">Creator discovery review requires the configured PostgreSQL control plane.</div>`;
+      if (reviewLoading && !discoveryReview) return controls + `<div class="loading">Loading creator evidence...</div>`;
+      const item = discoveryReview?.item;
+      if (!item) return controls + `<div class="empty">No creators match this review queue.</div>`;
+      const observations = item.observations || [];
+      const media = item.media || [];
+      const components = Object.entries(item.score_components || {}).sort((a, b) => b[1] - a[1]);
+      return `${controls}
+        <section class="summary-band" data-level="${item.safety_state === "blocked" ? "critical" : item.safety_state === "review" ? "warning" : "healthy"}">
+          <div><h2>${esc(item.display_name || item.handle || item.did)}</h2>
+          <p>@${esc(item.handle || "unknown")} · ${number(item.followers_count)} followers · depth ${number(item.minimum_depth)}</p></div>
+          ${tag(item.state, item.state === "qualified" ? "healthy" : item.state === "blocked" ? "critical" : "warning")}
+        </section>
+        <div class="metrics-grid">
+          ${metric("Creator score", decimal(item.creator_score), esc(item.score_version || "unscored"))}
+          ${metric("Expansion score", decimal(item.expansion_score), `${number(item.discovery_count)} observations`)}
+          ${metric("Accepted media", number(item.accepted_media), `${number(item.sampled_media)} sampled`)}
+          ${metric("Review media", number(item.review_media), `${number(item.rejected_media)} rejected`)}
+          ${metric("Safety", tag(item.safety_state, item.safety_state === "allowed" ? "healthy" : item.safety_state === "blocked" ? "critical" : "warning"), "independent policy state")}
+          ${metric("Last seen", esc(formatDate(item.last_seen_at)), esc(item.did))}
+        </div>
+        ${item.description ? `<div class="text-evidence"><strong>Profile</strong>\n${esc(item.description)}</div>` : ""}
+        ${section("Sampled media", "Images remain concealed until explicitly revealed")}
+        <div class="retrieval-grid">${media.length ? media.map(entry => `<article class="result-card">
+          ${concealedMedia("discovery", entry.candidate_id, `discovery:${item.did}`, true)}
+          <div class="result-body"><h3>${esc(humanize(entry.state))}</h3><p class="mono">${esc(entry.candidate_id)}</p><p>${number(entry.width)} x ${number(entry.height)}</p></div>
+        </article>`).join("") : `<div class="empty">No locally recorded media sample is available.</div>`}</div>
+        <div class="split" style="margin-top:12px">
+          <div class="panel"><h3>Score components</h3><div class="table-wrap"><table><thead><tr><th>Signal</th><th>Score</th></tr></thead><tbody>
+            ${rows(components, "No score evidence.", ([label, value]) => `<tr><td>${esc(humanize(label))}</td><td>${decimal(value)}</td></tr>`)}
+          </tbody></table></div></div>
+          <div class="panel"><h3>Discovery provenance</h3><div class="table-wrap"><table><thead><tr><th>Source</th><th>Reference / query</th></tr></thead><tbody>
+            ${rows(observations, "No provenance rows.", observation => `<tr><td>${esc(humanize(observation.source_type))}</td><td>${esc(observation.query || observation.source_ref)}</td></tr>`)}
+          </tbody></table></div></div>
+        </div>
+        <form id="creator-review-form" class="review-form">
+          <input type="hidden" name="did" value="${esc(item.did)}">
+          <div class="field-grid">
+            <div class="field"><label>Decision${reviewSelect("decision", reviewSummary?.discovery?.decisions, "", "Choose action")}</label></div>
+            <div class="field"><label>Reviewer note<textarea name="note" placeholder="Why this creator should be expanded, deferred, rejected, or blocked"></textarea></label></div>
+          </div>
+          <div class="review-actions"><button type="submit" class="button primary">Save creator decision &amp; continue</button></div>
+          <div class="review-message">${esc(reviewMessage)}</div>
+        </form>`;
+    }
+
     function renderReview() {
       if (!reviewToken) return `<div class="empty">Human review is available only when this dashboard is bound to localhost.</div>`;
       const filter = reviewSummary?.filter || {};
       const retrieval = reviewSummary?.retrieval || {};
+      const discovery = snapshot?.discovery || {};
       return `
         <div class="metrics-grid">
           ${metric("Filter decisions", number(filter.decisions), `${number(filter.pending)} need a label`)}
           ${metric("Latest filter labels", number(filter.labeled), `${number(filter.history_events)} immutable events`)}
           ${metric("Retrieval judgments", number(retrieval.latest_judgments), `${number(retrieval.history_events)} immutable events`)}
+          ${metric("Creator review queue", number(discovery.creator_states?.needs_review || 0), `${number(discovery.creator_states?.qualified || 0)} qualified`)}
           ${metric("Reviewer", esc(reviewSummary?.annotator || "local-reviewer"), "stored with every event")}
           ${metric("Label output", `<span class="mono">${esc(filter.output || "loading")}</span>`, "local and Git-ignored")}
           ${metric("Judgment output", `<span class="mono">${esc(retrieval.output || "loading")}</span>`, "local and Git-ignored")}
@@ -838,13 +1173,188 @@ _TEMPLATE = r"""<!doctype html>
         <div class="review-switcher">
           <button class="button" aria-pressed="${reviewWorkspace === "filter"}" data-review-action="workspace" data-workspace="filter">Artwork gate decisions</button>
           <button class="button" aria-pressed="${reviewWorkspace === "retrieval"}" data-review-action="workspace" data-workspace="retrieval">Retrieval feedback</button>
+          <button class="button" aria-pressed="${reviewWorkspace === "discovery"}" data-review-action="workspace" data-workspace="discovery">Creator discovery</button>
         </div>
-        <div id="review-workspace">${reviewWorkspace === "filter" ? renderFilterWorkspace() : renderRetrievalWorkspace()}</div>`;
+        <div id="review-workspace">${reviewWorkspace === "filter" ? renderFilterWorkspace() : reviewWorkspace === "retrieval" ? renderRetrievalWorkspace() : renderDiscoveryWorkspace()}</div>`;
     }
 
     function paintReview() {
       const panel = document.querySelector('[data-panel="review"]');
       if (panel) panel.innerHTML = renderReview();
+    }
+
+    function paintCorpusControl() {
+      const container = document.getElementById("corpus-control");
+      if (!container) return;
+      container.innerHTML = renderCorpusControl();
+      requestAnimationFrame(drawCorpusGraph);
+    }
+
+    const graphHash = (value, salt=0) => {
+      let hash = 2166136261 ^ salt;
+      for (const char of String(value)) {
+        hash ^= char.charCodeAt(0);
+        hash = Math.imul(hash, 16777619);
+      }
+      return (hash >>> 0) / 4294967295;
+    };
+
+    function layoutCorpusGraph(artists, edges) {
+      const count = artists.length;
+      if (!count) return [];
+      const columns = Math.ceil(Math.sqrt(count * 1.65));
+      const rowsCount = Math.ceil(count / columns);
+      const positions = artists.map((artist, index) => ({
+        x: ((index % columns) + 0.5 + (graphHash(artist.key, 1) - 0.5) * 0.5) / columns,
+        y: (Math.floor(index / columns) + 0.5 + (graphHash(artist.key, 2) - 0.5) * 0.5) / rowsCount
+      }));
+      for (let iteration = 0; iteration < 48; iteration += 1) {
+        const strength = 0.012 * (1 - iteration / 60);
+        for (const edge of edges || []) {
+          const source = positions[edge[0]], target = positions[edge[1]];
+          if (!source || !target) continue;
+          const dx = target.x - source.x, dy = target.y - source.y;
+          source.x += dx * strength; source.y += dy * strength;
+          target.x -= dx * strength; target.y -= dy * strength;
+        }
+      }
+      return positions;
+    }
+
+    function drawCorpusGraph() {
+      const canvas = document.getElementById("corpus-graph");
+      if (!canvas || !corpusGraph?.artists?.length) return;
+      const bounds = canvas.getBoundingClientRect();
+      const width = Math.max(320, bounds.width), height = Math.max(300, bounds.height);
+      const ratioValue = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.round(width * ratioValue);
+      canvas.height = Math.round(height * ratioValue);
+      const context = canvas.getContext("2d");
+      context.scale(ratioValue, ratioValue);
+      context.clearRect(0, 0, width, height);
+      corpusGraphPositions = layoutCorpusGraph(corpusGraph.artists, corpusGraph.edges || []);
+      const margin = 24;
+      const screen = corpusGraphPositions.map(point => ({
+        x: margin + point.x * (width - margin * 2),
+        y: margin + point.y * (height - margin * 2)
+      }));
+
+      context.lineWidth = 0.7;
+      for (const edge of corpusGraph.edges || []) {
+        const source = screen[edge[0]], target = screen[edge[1]];
+        if (!source || !target) continue;
+        context.strokeStyle = edge[2] === "follows" ? "rgba(36,95,156,.24)" : "rgba(23,102,58,.22)";
+        context.beginPath(); context.moveTo(source.x, source.y); context.lineTo(target.x, target.y); context.stroke();
+      }
+
+      const postOrdinals = new Map();
+      context.fillStyle = "rgba(148,98,0,.42)";
+      for (const post of corpusGraph.posts || []) {
+        const artistIndex = post[0], center = screen[artistIndex];
+        if (!center) continue;
+        const ordinal = postOrdinals.get(artistIndex) || 0;
+        postOrdinals.set(artistIndex, ordinal + 1);
+        const angle = ordinal * 2.399963 + graphHash(post[1], 4) * 0.5;
+        const radius = 4.5 + Math.sqrt(ordinal + 1) * 1.25;
+        context.beginPath();
+        context.arc(center.x + Math.cos(angle) * radius, center.y + Math.sin(angle) * radius, 0.75, 0, Math.PI * 2);
+        context.fill();
+      }
+
+      corpusGraph.artists.forEach((artist, index) => {
+        const point = screen[index];
+        const radius = Math.min(7, 2.6 + Math.log2(1 + Number(artist.artworks || 0)) * 0.55);
+        context.fillStyle = artist.in_corpus ? "#17663a" : artist.state === "blocked" ? "#a33831" : artist.state === "needs_review" ? "#946200" : "#245f9c";
+        context.beginPath(); context.arc(point.x, point.y, radius, 0, Math.PI * 2); context.fill();
+        if (index === selectedArtistIndex) {
+          context.lineWidth = 2;
+          context.strokeStyle = "#19221b";
+          context.beginPath(); context.arc(point.x, point.y, radius + 4, 0, Math.PI * 2); context.stroke();
+        }
+      });
+      canvas.onclick = event => {
+        const rect = canvas.getBoundingClientRect();
+        const x = event.clientX - rect.left, y = event.clientY - rect.top;
+        let nearest = -1, distance = 15;
+        screen.forEach((point, index) => {
+          const current = Math.hypot(point.x - x, point.y - y);
+          if (current < distance) { nearest = index; distance = current; }
+        });
+        if (nearest < 0) return;
+        selectedArtistIndex = nearest;
+        const detail = document.getElementById("corpus-artist-detail");
+        if (detail) detail.innerHTML = renderSelectedArtist();
+        drawCorpusGraph();
+      };
+    }
+
+    async function controlGet(path) {
+      const query = new URLSearchParams({token: reviewToken});
+      const response = await fetch(`${path}?${query}`, {cache: "no-store"});
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.message || payload.error || `HTTP ${response.status}`);
+      return payload;
+    }
+
+    async function controlPost(path, payload) {
+      const response = await fetch(path, {
+        method: "POST",
+        headers: {"Content-Type": "application/json", "X-ArtSearch-Review-Token": reviewToken},
+        body: JSON.stringify(payload)
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.message || body.error || `HTTP ${response.status}`);
+      return body;
+    }
+
+    function scheduleControlPoll() {
+      clearTimeout(controlPollTimer);
+      if (!controlJob?.active) return;
+      controlPollTimer = setTimeout(async () => {
+        const wasActive = Boolean(controlJob?.active);
+        try {
+          controlJob = await controlGet("/api/control/job");
+          paintCorpusControl();
+          if (wasActive && !controlJob.active) {
+            corpusGraph = await controlGet("/api/control/graph");
+            controlMessage = "Corpus state refreshed after job completion.";
+            paintCorpusControl();
+            load(true);
+          }
+        } catch (error) {
+          controlMessage = error.message; paintCorpusControl();
+        }
+        scheduleControlPoll();
+      }, 2000);
+    }
+
+    async function loadCorpusControl() {
+      if (!reviewToken || controlLoading) return;
+      controlLoading = true; paintCorpusControl();
+      try {
+        [corpusGraph, controlJob] = await Promise.all([
+          controlGet("/api/control/graph"),
+          controlGet("/api/control/job")
+        ]);
+        selectedArtistIndex = Math.min(selectedArtistIndex, Math.max(0, corpusGraph.artists.length - 1));
+        controlMessage = "";
+      } catch (error) {
+        controlMessage = error.message;
+      } finally {
+        controlLoading = false; paintCorpusControl(); scheduleControlPoll();
+      }
+    }
+
+    async function startCorpusJob(path, form) {
+      const payload = Object.fromEntries(new FormData(form).entries());
+      controlMessage = "Starting bounded background job..."; paintCorpusControl();
+      try {
+        controlJob = await controlPost(path, payload);
+        controlMessage = "Job accepted. This panel will update while it runs.";
+      } catch (error) {
+        controlMessage = error.message;
+      }
+      paintCorpusControl(); scheduleControlPoll();
     }
 
     async function reviewGet(path, params={}) {
@@ -888,12 +1398,23 @@ _TEMPLATE = r"""<!doctype html>
       finally { reviewLoading = false; paintReview(); }
     }
 
+    async function loadDiscoveryReview() {
+      reviewLoading = true; discoveryReview = null; paintReview();
+      try {
+        discoveryReview = await reviewGet("/api/review/discovery", {
+          state: discoveryState, offset: discoveryOffset
+        });
+        discoveryOffset = discoveryReview.offset;
+      } finally { reviewLoading = false; paintReview(); }
+    }
+
     async function ensureReview() {
       if (!reviewToken) return;
       try {
         if (!reviewSummary) await loadReviewSummary();
         if (reviewWorkspace === "filter" && !filterReview) await loadFilterReview();
         if (reviewWorkspace === "retrieval" && !retrievalReview) await loadRetrievalReview();
+        if (reviewWorkspace === "discovery" && !discoveryReview) await loadDiscoveryReview();
       } catch (error) {
         reviewLoading = false; reviewMessage = error.message;
         paintReview();
@@ -907,12 +1428,13 @@ _TEMPLATE = r"""<!doctype html>
       document.getElementById("generated-at").textContent = `v${snapshot.application_version} · refreshed ${formatDate(snapshot.generated_at)}`;
       const panels = {
         overview: renderOverview(snapshot), quality: renderQuality(snapshot),
-        data: renderData(snapshot), operations: renderOperations(snapshot),
+        data: renderData(snapshot), discovery: renderDiscovery(snapshot), operations: renderOperations(snapshot),
         review: renderReview()
       };
       document.getElementById("app").innerHTML = Object.entries(panels).map(([name, html]) =>
         `<section class="tab-panel" data-panel="${name}" ${name === activeTab ? "" : "hidden"}>${html}</section>`
       ).join("");
+      if (activeTab === "discovery" && corpusGraph) requestAnimationFrame(drawCorpusGraph);
     }
 
     async function load(force=false) {
@@ -943,11 +1465,33 @@ _TEMPLATE = r"""<!doctype html>
       document.querySelectorAll(".tab-panel").forEach(panel => panel.hidden = panel.dataset.panel !== activeTab);
       if (updateHash) history.replaceState(null, "", `#${activeTab}`);
       if (activeTab === "review") ensureReview();
+      if (activeTab === "discovery") {
+        if (!corpusGraph) loadCorpusControl();
+        else requestAnimationFrame(drawCorpusGraph);
+      }
+    }
+    function dispatchOperatorAction(action) {
+      window.dispatchEvent(new CustomEvent("artsearch:operator-action", {detail: {
+        action,
+        requested_at: new Date().toISOString(),
+        snapshot_generated_at: snapshot?.generated_at ?? null
+      }}));
     }
     document.querySelectorAll(".tab").forEach(button => button.addEventListener("click", () => activateTab(button.dataset.tab)));
+    document.querySelectorAll("[data-operator-action]").forEach(button => button.addEventListener("click", () => {
+      dispatchOperatorAction(button.dataset.operatorAction);
+      if (button.dataset.operatorAction === "run-intake") {
+        activateTab("discovery");
+        loadCorpusControl();
+        setTimeout(() => document.getElementById("corpus-control")?.scrollIntoView({behavior: "smooth", block: "start"}), 0);
+      }
+    }));
     window.addEventListener("hashchange", () => activateTab(location.hash.slice(1), false));
     activateTab(activeTab, false);
     document.getElementById("refresh").addEventListener("click", () => load(true));
+    window.addEventListener("resize", () => {
+      if (activeTab === "discovery" && corpusGraph) requestAnimationFrame(drawCorpusGraph);
+    });
     document.addEventListener("change", event => {
       if (event.target.id === "filter-decision") {
         filterDecision = event.target.value; filterOffset = 0; reviewMessage = "";
@@ -961,19 +1505,39 @@ _TEMPLATE = r"""<!doctype html>
         retrievalMode = event.target.value; retrievalReview = null; reviewMessage = "";
         loadRetrievalReview().catch(error => { reviewMessage = error.message; paintReview(); });
       }
+      if (event.target.id === "discovery-state") {
+        discoveryState = event.target.value; discoveryOffset = 0; reviewMessage = "";
+        loadDiscoveryReview().catch(error => { reviewMessage = error.message; paintReview(); });
+      }
     });
     document.addEventListener("submit", async event => {
-      if (event.target.id !== "filter-label-form") return;
+      if (["corpus-refresh-form", "corpus-expand-form"].includes(event.target.id)) {
+        event.preventDefault();
+        await startCorpusJob(
+          event.target.id === "corpus-refresh-form" ? "/api/control/refresh" : "/api/control/expand",
+          event.target
+        );
+        return;
+      }
+      if (!["filter-label-form", "creator-review-form"].includes(event.target.id)) return;
       event.preventDefault();
       const form = new FormData(event.target);
-      reviewMessage = "Saving label..."; paintReview();
+      reviewMessage = "Saving decision..."; paintReview();
       try {
         const payload = Object.fromEntries(form.entries());
-        const response = await reviewPost("/api/review/filter-label", payload);
-        reviewSummary = response.summary;
-        reviewMessage = response.appended ? "Label saved." : "This exact label was already saved.";
-        filterReview = null;
-        await loadFilterReview();
+        if (event.target.id === "filter-label-form") {
+          const response = await reviewPost("/api/review/filter-label", payload);
+          reviewSummary = response.summary;
+          reviewMessage = response.appended ? "Label saved." : "This exact label was already saved.";
+          filterReview = null;
+          await loadFilterReview();
+        } else {
+          const response = await reviewPost("/api/review/discovery-decision", payload);
+          reviewSummary = response.summary;
+          reviewMessage = `Creator marked ${humanize(response.state)}.`;
+          discoveryReview = null;
+          await loadDiscoveryReview();
+        }
         load(true);
       } catch (error) { reviewMessage = error.message; paintReview(); }
     });
@@ -996,6 +1560,10 @@ _TEMPLATE = r"""<!doctype html>
           if (select) select.value = button.dataset.modelClass;
         } else if (action === "new-retrieval") {
           await loadRetrievalReview();
+        } else if (action === "discovery-prev") {
+          discoveryOffset = Math.max(0, discoveryOffset - 1); await loadDiscoveryReview();
+        } else if (action === "discovery-next") {
+          discoveryOffset += 1; await loadDiscoveryReview();
         } else if (action === "rate") {
           button.disabled = true;
           const relevant = button.dataset.relevant === "true";

@@ -57,3 +57,24 @@ def test_cutover_does_not_import_environment_specific_qdrant_state() -> None:
     source_tables = {spec.source_name for spec in migration._table_specs(scoped=False)}
 
     assert "vector_index_points" not in source_tables
+
+
+def test_compact_cutover_omits_vectors_and_heavy_audit_history() -> None:
+    source_tables = {
+        spec.source_name
+        for spec in migration._table_specs(
+            scoped=False,
+            include_embeddings=False,
+            include_filter_history=False,
+            include_run_history=False,
+        )
+    }
+
+    assert "artists" in source_tables
+    assert "artworks" in source_tables
+    assert "artwork_objects" in source_tables
+    assert "embeddings" not in source_tables
+    assert "artwork_filter_decisions" not in source_tables
+    assert "artwork_filter_routes" not in source_tables
+    assert "runs" not in source_tables
+    assert "run_events" not in source_tables

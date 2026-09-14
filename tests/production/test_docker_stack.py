@@ -13,15 +13,40 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_project_declares_the_container_python_contract() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    python_version = (ROOT / ".python-version").read_text(encoding="utf-8").strip()
 
+    assert python_version.split(".")[:2] == ["3", "12"]
     assert project["project"]["requires-python"] == ">=3.12,<3.13"
     assert project["tool"]["ruff"]["target-version"] == "py312"
 
 
+def test_python_version_pin_is_shared_by_ci_and_container_builds() -> None:
+    python_version = (ROOT / ".python-version").read_text(encoding="utf-8").strip()
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    airflow_dockerfile = (ROOT / "orchestration/airflow/Dockerfile").read_text(
+        encoding="utf-8"
+    )
+
+    assert f"python:{python_version}-slim-bookworm" in dockerfile
+    assert "COPY .python-version /tmp/artsearch-python-version" in dockerfile
+    assert "COPY --chown=airflow:root .python-version /tmp/artsearch-python-version" in (
+        airflow_dockerfile
+    )
+
+    workflow_expectations = {
+        ROOT / ".github/workflows/ci.yml": 2,
+        ROOT / ".github/workflows/deploy-alpha.yml": 1,
+    }
+    for workflow_path, expected_count in workflow_expectations.items():
+        workflow = workflow_path.read_text(encoding="utf-8")
+        assert workflow.count('python-version-file: ".python-version"') == expected_count
+
+
 def test_application_dockerfile_has_control_ml_and_test_targets() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    python_version = (ROOT / ".python-version").read_text(encoding="utf-8").strip()
 
-    assert "python:3.12.14-slim-bookworm" in dockerfile
+    assert f"python:{python_version}-slim-bookworm" in dockerfile
     assert "FROM runtime-base AS runtime" in dockerfile
     assert "FROM runtime-base AS ml" in dockerfile
     assert "FROM runtime-base AS test" in dockerfile

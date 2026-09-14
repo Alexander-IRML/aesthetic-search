@@ -3,8 +3,12 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from collections import defaultdict, deque
 from datetime import UTC, datetime
+import hashlib
+import hmac
 from importlib.resources import files
+import ipaddress
 import logging
+import os
 from pathlib import Path
 import re
 from threading import Lock
@@ -13,7 +17,7 @@ from typing import Annotated
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from artsearch.api.config import SearchApiConfig, load_search_api_config
 from artsearch.api.errors import (
@@ -32,8 +36,11 @@ from artsearch.api.schemas import (
     ErrorDetail,
     ErrorResponse,
     ImageSearchResponse,
+    RetrievalWeights,
     ResultFeedbackRequest,
     ResultFeedbackResponse,
+    SiteVisitRequest,
+    SiteVisitResponse,
 )
 from artsearch.api.service import ImageSearchService
 from artsearch.postgres.ids import uuid7
@@ -83,7 +90,7 @@ def create_app(
     async def lifespan(application: FastAPI):
         owns_service = service is None and initialize_search_service
         if owns_service:
-            application.state.search_service = build_image_search_service(
+            application.state.search_service = await build_image_search_service(
                 app_config_path=app_config_path,
                 production_config_path=production_config_path,
                 api_config_path=api_config_path,
@@ -94,7 +101,7 @@ def create_app(
             yield
         finally:
             if owns_service and application.state.search_service is not None:
-                application.state.search_service.close()
+                await application.state.search_service.aclose()
 
     application = FastAPI(
         title="ArtSearch Image Search API",
@@ -141,8 +148,12 @@ def create_app(
                         "The request exceeds the image upload limit.",
                     )
                     return _security_headers(response)
-        if request.method == "POST" and request.url.path == "/api/result-feedback":
-            retry_after = feedback_limiter.check(_client_ip(request, settings))
+        if request.method == "POST" and request.url.path in {
+            "/api/result-feedback",
+            "/api/site-visit",
+        }:
+            limiter_key = f"{request.url.path}:{_client_ip(request, settings)}"
+            retry_after = feedback_limiter.check(limiter_key)
             if retry_after is not None:
                 response = _error_response(
                     request,
@@ -161,7 +172,11 @@ def create_app(
         message = (
             "Provide a valid query, result, session key, and feedback grade."
             if request.url.path == "/api/result-feedback"
-            else "Provide one image file and a valid session key."
+            else (
+                "Provide a valid browser session key."
+                if request.url.path == "/api/site-visit"
+                else "Provide one image file, valid weights, and a valid session key."
+            )
         )
         return _error_response(
             request,
@@ -196,22 +211,62 @@ def create_app(
         return {
             "status": "ready",
             "model_bundle_version": active.model_bundle,
-            "index_alias": active.qdrant_config.alias_name,
+            "vector_backend": active.retrieval_contract.backend,
+            "index_alias": active.retrieval_contract.index_alias,
+            "index_version": active.retrieval_contract.index_version,
         }
 
     @application.get("/api/runtime-status", include_in_schema=False)
     async def runtime_status(request: Request):
         active = getattr(request.app.state, "search_service", None)
         warm = active is not None and active.ready
+        inference = getattr(active, "inference_status", None) if warm else None
         return JSONResponse(
             {
                 "status": "ready" if warm else "cold",
                 "warm": warm,
                 "container_state": "local_ready" if warm else "local_stopped",
                 "observed_at": datetime.now(UTC).isoformat(),
+                **({"inference": inference} if inference is not None else {}),
             },
             headers={"Cache-Control": "no-store"},
         )
+
+    @application.post(
+        "/api/site-visit",
+        response_model=SiteVisitResponse,
+        responses={
+            400: {"model": ErrorResponse},
+            429: {"model": ErrorResponse},
+            503: {"model": ErrorResponse},
+        },
+        include_in_schema=False,
+    )
+    async def site_visit(request: Request, payload: SiteVisitRequest):
+        if not SESSION_KEY.fullmatch(payload.session_key):
+            return _error_response(
+                request,
+                400,
+                "invalid_session",
+                "The browser session key is invalid.",
+            )
+        active = request.app.state.search_service
+        if active is None or not active.ready:
+            return _error_response(
+                request,
+                503,
+                "service_starting",
+                "Visitor telemetry is temporarily unavailable.",
+                headers={"Retry-After": "10"},
+            )
+        visitor_hash = _visitor_hash(request, settings)
+        if visitor_hash is None:
+            return SiteVisitResponse(status="disabled")
+        recorded = await active.record_site_visit(
+            client_session_key=payload.session_key,
+            visitor_hash=visitor_hash,
+        )
+        return SiteVisitResponse(status="recorded" if recorded else "disabled")
 
     @application.post(
         "/api/search-by-image",
@@ -230,6 +285,10 @@ def create_app(
         image: Annotated[UploadFile, File(description="JPEG, PNG, or WebP query image")],
         session_key: Annotated[str, Form(min_length=8, max_length=128)],
         artist_id: Annotated[str | None, Form(max_length=256)] = None,
+        clip_first_half: Annotated[float, Form(ge=0.1, le=2.0)] = 1.0,
+        clip_second_half: Annotated[float, Form(ge=0.1, le=2.0)] = 1.0,
+        csd_first_half: Annotated[float, Form(ge=0.1, le=2.0)] = 1.0,
+        csd_second_half: Annotated[float, Form(ge=0.1, le=2.0)] = 1.0,
     ):
         if not SESSION_KEY.fullmatch(session_key):
             return _error_response(
@@ -252,11 +311,19 @@ def create_app(
             validated = await read_validated_image(image, settings)
             decode_ms = (time.perf_counter() - decode_started) * 1000.0
             artist_scope = (artist_id or "").strip() or None
+            retrieval_weights = RetrievalWeights(
+                clip_first_half=clip_first_half,
+                clip_second_half=clip_second_half,
+                csd_first_half=csd_first_half,
+                csd_second_half=csd_second_half,
+            )
             return await active.search_image(
                 validated.image,
                 client_session_key=session_key,
                 upload_decode_ms=decode_ms,
                 artist_id=artist_scope,
+                retrieval_weights=retrieval_weights,
+                visitor_hash=_visitor_hash(request, settings),
             )
         except UploadTooLargeError as exc:
             return _error_response(request, 413, "upload_too_large", str(exc))
@@ -341,16 +408,12 @@ def create_app(
     @application.get("/api/artworks/{artwork_id}/image", include_in_schema=False)
     async def artwork_image(request: Request, artwork_id: str):
         active = request.app.state.search_service
-        path = None if active is None else active.catalog.local_image_path(artwork_id)
+        path = None if active is None else await active.catalog.local_image_path(artwork_id)
         if path is None:
             return _error_response(request, 404, "image_not_found", "Artwork image not found.")
-        try:
-            content = path.read_bytes()
-        except OSError:
-            return _error_response(request, 404, "image_not_found", "Artwork image not found.")
         media_type = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
-        return Response(
-            content,
+        return FileResponse(
+            path,
             media_type=media_type,
             headers={"Cache-Control": "private, max-age=3600"},
         )
@@ -377,6 +440,21 @@ def _client_ip(request: Request, config: SearchApiConfig) -> str:
         if cloudflare_ip:
             return cloudflare_ip
     return request.client.host if request.client is not None else "unknown"
+
+
+def _visitor_hash(request: Request, config: SearchApiConfig) -> str | None:
+    secret = os.environ.get(config.visitor_hash_secret_env, "").strip()
+    if not secret:
+        return None
+    try:
+        address = ipaddress.ip_address(_client_ip(request, config)).compressed
+    except ValueError:
+        return None
+    return hmac.new(
+        secret.encode("utf-8"),
+        f"artsearch-site-visitor-v1:{address}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def _error_response(

@@ -9,7 +9,11 @@ from PIL import Image
 from artsearch.embed.models import HuggingFaceEmbeddingProvider
 from artsearch.embed.storage import ImageEmbeddings, normalize_embeddings
 from artsearch.ingest.config import AppConfig
-from artsearch.production.config import QdrantConfig
+
+
+class VectorDimensionContract(Protocol):
+    clip_dimension: int
+    csd_dimension: int
 
 
 @dataclass(frozen=True)
@@ -36,11 +40,11 @@ class PinnedQueryEncoder:
     def __init__(
         self,
         app_config: AppConfig,
-        qdrant_config: QdrantConfig,
+        vector_config: VectorDimensionContract,
         *,
         provider: HuggingFaceEmbeddingProvider | None = None,
     ) -> None:
-        self.qdrant_config = qdrant_config
+        self.vector_config = vector_config
         self.provider = provider or HuggingFaceEmbeddingProvider(app_config)
 
     def encode(self, image: Image.Image) -> QueryEncoding:
@@ -50,10 +54,10 @@ class PinnedQueryEncoder:
         normalize_started = time.perf_counter()
         normalized = normalize_embeddings(values[0])
         normalize_ms = (time.perf_counter() - normalize_started) * 1000.0
-        if normalized.clip_dim != self.qdrant_config.clip_dimension:
-            raise RuntimeError("query CLIP dimension does not match the active Qdrant collection")
-        if normalized.csd_style_dim != self.qdrant_config.csd_dimension:
-            raise RuntimeError("query CSD dimension does not match the active Qdrant collection")
+        if normalized.clip_dim != self.vector_config.clip_dimension:
+            raise RuntimeError("query CLIP dimension does not match the active retrieval index")
+        if normalized.csd_style_dim != self.vector_config.csd_dimension:
+            raise RuntimeError("query CSD dimension does not match the active retrieval index")
         return QueryEncoding(
             embeddings=normalized,
             clip_ms=timing.clip_ms,

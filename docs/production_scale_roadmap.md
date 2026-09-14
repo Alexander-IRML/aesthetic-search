@@ -4,7 +4,7 @@ Status: architecture north star and delivery plan
 
 Recorded: 2026-08-12
 
-Current representation update: 2026-08-20
+Current representation update: 2026-09-08
 
 This document records the intended path from the current private MVP to a
 production-scale visual search system. It translates the supplied "Aesthetic
@@ -23,6 +23,9 @@ The closed-alpha cloud topology selected on 2026-08-19 is recorded in
 `docs/adr/0001-alpha-cloud-topology.md`. That ADR supersedes earlier language in
 this roadmap and its research inputs that places serving or model work on the
 developer workstation.
+The accepted budget-constrained ten-million path is recorded in
+`docs/adr/0003-budget-constrained-ten-million-retrieval.md`; its executable
+staging and promotion procedure is in `docs/ten_million_scale_runbook.md`.
 
 The current implementation remains documented in `docs/mvp_report.md` and
 `docs/artsearch_architecture.puml`. Those documents describe what runs today;
@@ -46,11 +49,12 @@ faster.
 
 ### Approved Operating Envelope
 
-The initial searchable corpus is 5,000 accepted artworks, growing to 100,000 at
-three months, 500,000 at eight months, and 1,000,000 at twelve months. Scheduled
-first-year intake now targets 5,000 candidates/day, with the implementation
-sized for backfills of 10,000 candidates/day and 5,000 accepted images/day. Mature
-maintenance is about 500 candidates/day.
+The initial searchable corpus is 5,000 accepted artworks, growing first through
+100,000 and 1,000,000 measured stages. The new long-range target is 10,000,000
+searchable artworks under a hard USD 50/month recurring infrastructure budget.
+Scheduled first-year intake targets 5,000 candidates/day, with the
+implementation sized for backfills of 10,000 candidates/day and 5,000 accepted
+images/day. Mature maintenance is about 500 candidates/day.
 
 The first alpha serves approximately five invited users on best-effort,
 single-node infrastructure. Rejected bytes are deleted after durable evidence
@@ -60,7 +64,7 @@ in the capacity profile.
 
 ## Current Baseline
 
-ArtSearch v0.3.1 establishes a useful vertical slice:
+ArtSearch v0.6.0 establishes a useful vertical slice:
 
 | Area | Current behavior |
 | --- | --- |
@@ -85,14 +89,14 @@ The following are directional commitments for the production design.
 
 | Decision | Direction |
 | --- | --- |
-| Vector retrieval | Qdrant with HNSW-backed named global vectors and payload filters |
+| Vector retrieval | Qdrant/HNSW for the current alpha; compressed FAISS snapshots for the budget-constrained 10M target |
 | Retrieval shape | Multi-representation, multi-stage candidate funnel |
 | Corpus bytes | Object storage rather than database BLOBs |
 | Canonical metadata | Durable relational store; Qdrant is a derived serving index, not the source of truth |
 | Style features | One normalized CSD vector per artwork; no active patch artifact tier |
 | Hybrid recall | Union candidates from semantic, visual, style/facet, sparse/text, and metadata-aware retrieval |
 | Ranking evidence | Preserve every component score and stage rank independently |
-| Deployment | Versioned index builds with shadow validation and alias-based promotion |
+| Deployment | Versioned index builds with shadow validation and atomic alias/pointer promotion |
 | Learning loop | Join offline judgments and consented alpha interactions to exact model/index versions |
 
 ### Starred North-Star Decisions

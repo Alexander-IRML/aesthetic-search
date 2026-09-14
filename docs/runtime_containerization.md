@@ -4,11 +4,16 @@ Status: implemented and locally verified on Docker Desktop 4.87.0
 
 ## Decision
 
-ArtSearch production and CI containers use CPython 3.12. The supported package
-metadata is intentionally `>=3.12,<3.13`, even though the current host virtual
-environment is Python 3.14.4 and several dependencies now advertise 3.14
-support. One minor Python version keeps compiled wheels, Airflow tasks, Spark
-drivers/workers, local tests, and deployment images on the same ABI.
+ArtSearch local development, production containers, and CI use CPython 3.12.
+The supported package metadata is intentionally `>=3.12,<3.13`, even though
+several dependencies advertise support for newer Python releases. One minor
+Python version keeps compiled wheels, Airflow tasks, Spark drivers/workers,
+local tests, and deployment images on the same ABI.
+
+`.python-version` is the canonical application and CI pin. Application images
+assert that their interpreter matches it exactly during the build. The
+official Airflow image asserts the same 3.12 minor while retaining the patch
+release tested and published by Airflow.
 
 Python 3.12 remains in security-fix support through October 2028. Container tags
 must move to each new 3.12 security patch after a clean image build and test
@@ -29,11 +34,11 @@ not an incidental virtualenv upgrade.
 | PostgreSQL / pgvector | 17 / 0.8.6 | Current pgvector PG17 image | Canonical local control-plane service |
 | Qdrant | 1.18.2 | Matches the pinned Python client minor | Rebuildable local ANN service |
 
-The host environment is internally consistent (`pip check` passes), but its
-PyPI Torch install also pulled CUDA 13 libraries. That is useful only for a
-matching GPU host and makes a poor default deployment image. The `ml` and
-Airflow images instead install the CPU wheel from PyTorch's CPU index. A future
-Modal/GPU image should select and test one explicit CUDA runtime separately.
+The previous workstation environment used Python 3.14 and had pulled CUDA 13
+libraries despite having no visible CUDA device. Local bootstrap, the `ml`
+image, and the Airflow image now install the CPU wheel from PyTorch's CPU index.
+A future GPU worker image should select and test one explicit CUDA runtime
+separately.
 
 Airflow dependencies are constrained by the constraint file shipped in its
 official image. Application direct dependencies are separately pinned in
@@ -74,6 +79,19 @@ proven.
 
 ## Local Stack
 
+Install `uv`, then create the canonical local environment before using the
+host-side CLIs:
+
+```bash
+scripts/bootstrap_dev.sh
+source .venv/bin/activate
+```
+
+If an existing `.venv` uses another interpreter, run
+`scripts/bootstrap_dev.sh --replace`. The script preserves that environment in
+an ignored timestamped backup, installs CPython from `.python-version`, and
+uses `constraints/runtime-py312.txt` for the same CPU dependency family as CI.
+
 The root `compose.yaml` starts:
 
 1. PostgreSQL 17 with pgvector and `pg_stat_statements`.
@@ -113,9 +131,10 @@ docker build --target test --tag artsearch-test:local .
 docker run --rm artsearch-test:local
 ```
 
-The initial local verification completed with 187 tests passing in that image.
-The live Airflow health endpoint reported healthy metadata database, scheduler,
-triggerer, and DAG processor components.
+The current CPython 3.12.14 local verification completes with 291 tests passing
+and 3 optional tests skipped. The live Airflow health endpoint previously
+reported healthy metadata database, scheduler, triggerer, and DAG processor
+components.
 
 `data/` is bind-mounted for the local application but excluded from every image
 build context. PostgreSQL, Qdrant, and Airflow state use Docker volumes. Local

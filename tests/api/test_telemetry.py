@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 from artsearch.api.telemetry import PostgresSearchTelemetry, QueryTelemetryContext
@@ -12,27 +13,29 @@ class _Repository:
         self.impressions = []
         self.completed: dict[str, object] = {}
         self.started = None
+        self.stages = []
+        self.session_metadata: list[dict[str, object]] = []
 
-    def resolve_session(self, client_session_key, *, client_metadata):
-        assert client_metadata == {"surface": "public_search"}
+    async def resolve_session(self, client_session_key, *, client_metadata):
+        self.session_metadata.append(dict(client_metadata))
         return uuid.UUID("01911111-1111-7111-8111-111111111111")
 
-    def start_query(self, query) -> None:
+    async def start_query(self, query) -> None:
         self.started = query
 
-    def record_ranking_stage(self, query_id, stage) -> None:
-        return None
+    async def record_ranking_stage(self, query_id, stage) -> None:
+        self.stages.append(stage)
 
-    def record_candidates(self, query_id, values) -> None:
+    async def record_candidates(self, query_id, values) -> None:
         self.candidates = list(values)
 
-    def record_impressions(self, query_id, session_id, values) -> None:
+    async def record_impressions(self, query_id, session_id, values) -> None:
         self.impressions = list(values)
 
-    def complete_query(self, query_id, **values) -> None:
+    async def complete_query(self, query_id, **values) -> None:
         self.completed = values
 
-    def record_relevance_feedback(self, **values):
+    async def record_relevance_feedback(self, **values):
         assert values["grade"] == "great"
         return uuid.UUID("01933333-3333-7333-8333-333333333333"), 4
 
@@ -45,13 +48,16 @@ def test_postgres_telemetry_separates_ranked_candidates_from_impressions() -> No
         session_id=uuid.UUID("01911111-1111-7111-8111-111111111111"),
     )
 
-    telemetry.complete(
-        context,
-        hits=[_hit(rank) for rank in range(1, 21)],
-        model_bundle_version="bundle-v1",
-        index_version="index-v1",
-        timings={"encode_ms": 2.0, "vector_search_ms": 3.0, "total_ms": 9.0},
-        displayed_count=10,
+    asyncio.run(
+        telemetry.complete(
+            context,
+            hits=[_hit(rank) for rank in range(1, 21)],
+            model_bundle_version="bundle-v1",
+            index_version="index-v1",
+            vector_backend="faiss",
+            timings={"encode_ms": 2.0, "vector_search_ms": 3.0, "total_ms": 9.0},
+            displayed_count=10,
+        )
     )
 
     assert len(repository.candidates) == 20
@@ -60,31 +66,74 @@ def test_postgres_telemetry_separates_ranked_candidates_from_impressions() -> No
     assert repository.impressions[-1].result_rank == 10
     assert repository.completed["candidate_count"] == 20
     assert repository.completed["result_count"] == 10
+    assert repository.stages[-1].stage == "faiss_rrf"
+    assert repository.stages[-1].score_summary["vector_backend"] == "faiss"
 
 
 def test_postgres_telemetry_records_artist_scoped_agent_search() -> None:
     repository = _Repository()
     telemetry = PostgresSearchTelemetry(repository)  # type: ignore[arg-type]
 
-    context = telemetry.start(
-        client_session_key="browser-session-1234",
-        model_bundle_version="bundle-v1",
-        index_version="index-v1",
-        artist_id="artist-7",
+    context = asyncio.run(
+        telemetry.start(
+            client_session_key="browser-session-1234",
+            model_bundle_version="bundle-v1",
+            index_version="index-v1",
+            vector_backend="faiss",
+            artist_id="artist-7",
+            retrieval_weights={
+                "clip_first_half": 1.5,
+                "clip_second_half": 0.5,
+                "csd_first_half": 0.75,
+                "csd_second_half": 1.25,
+            },
+            visitor_hash="f" * 64,
+        )
     )
 
     assert context.session_id == uuid.UUID("01911111-1111-7111-8111-111111111111")
     assert repository.started.filters == {"artist_id": "artist-7"}
+    assert repository.started.retrieval_weights["vector_backend"] == "faiss"
+    assert repository.started.retrieval_weights["clip_first_half"] == 1.5
+    assert repository.started.retrieval_weights["csd_second_half"] == 1.25
+    assert repository.session_metadata[-1] == {
+        "surface": "public_search",
+        "visitor_ip_hash": "f" * 64,
+        "visitor_hash_version": "hmac-sha256-v1",
+    }
+
+
+def test_postgres_telemetry_records_pseudonymous_site_visit() -> None:
+    repository = _Repository()
+    telemetry = PostgresSearchTelemetry(repository)  # type: ignore[arg-type]
+
+    recorded = asyncio.run(
+        telemetry.record_visit(
+            client_session_key="browser-session-1234",
+            visitor_hash="a" * 64,
+        )
+    )
+
+    assert recorded is True
+    assert repository.session_metadata == [
+        {
+            "surface": "public_search",
+            "visitor_ip_hash": "a" * 64,
+            "visitor_hash_version": "hmac-sha256-v1",
+        }
+    ]
 
 
 def test_postgres_telemetry_returns_feedback_rank_receipt() -> None:
     telemetry = PostgresSearchTelemetry(_Repository())  # type: ignore[arg-type]
 
-    receipt = telemetry.feedback(
-        client_session_key="browser-session-1234",
-        query_id=uuid.UUID("01922222-2222-7222-8222-222222222222"),
-        artwork_id="art-4",
-        grade="great",
+    receipt = asyncio.run(
+        telemetry.feedback(
+            client_session_key="browser-session-1234",
+            query_id=uuid.UUID("01922222-2222-7222-8222-222222222222"),
+            artwork_id="art-4",
+            grade="great",
+        )
     )
 
     assert receipt is not None

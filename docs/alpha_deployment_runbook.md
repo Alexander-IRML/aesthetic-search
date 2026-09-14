@@ -58,6 +58,7 @@ Cloudflare account token as an application object-store key.
 | `QDRANT_API_KEY` | Qdrant database API key | Sync, evaluation, and query API |
 | `DATABASE_URL` | Neon pooled connection string | API, telemetry, and outbox workers |
 | `DATABASE_DIRECT_URL` | Neon direct connection string | Alembic and verified SQLite cutover |
+| `ARTSEARCH_VISITOR_HASH_SECRET` | Stable random value of at least 32 bytes | HMAC-hashed public visitor counts |
 | `MODAL_TOKEN_ID` | Modal token | Deployment/worker launcher |
 | `MODAL_TOKEN_SECRET` | Modal token | Deployment/worker launcher |
 | `ARTSEARCH_SESSION_SECRET` | Generated 32-byte secret | Future public API |
@@ -84,8 +85,9 @@ and direct URLs. Modal variables remain reserved for the inference deployment.
    branch before repeating them on the production branch.
 8. Publish the approved PostgreSQL corpus to Qdrant, verify count parity and ANN
    recall, and move the stable alias only after evaluation succeeds.
-9. Follow `deploy/cloudflare-search/README.md` to upload the three query-runtime
-   secrets, build the pinned model image, and deploy the public search link.
+9. Follow `deploy/cloudflare-search/README.md` to generate the visitor hash key,
+   upload the four query-runtime secrets, build the pinned model image, and
+   deploy the public search link.
 10. Provision a private intake VM or GPU worker only after measured throughput,
     uptime, or latency justifies the additional provider.
 

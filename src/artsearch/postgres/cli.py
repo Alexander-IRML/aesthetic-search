@@ -57,6 +57,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "max_overflow": config.postgres.max_overflow,
                 "telemetry_retention_days": config.postgres.telemetry_retention_days,
                 "outbox_batch_size": config.postgres.outbox_batch_size,
+                "publish_embeddings": config.postgres.publish_embeddings,
+                "publish_filter_history": config.postgres.publish_filter_history,
+                "publish_run_history": config.postgres.publish_run_history,
             }
             _print(payload)
             return 0
@@ -84,7 +87,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "publish-sqlite":
             from artsearch.ingest.config import load_config
-            from artsearch.postgres.model_lineage import model_bundle_record
+            from artsearch.postgres.model_lineage import configured_model_bundle_record
 
             candidate_ids = (
                 candidate_ids_from_jsonl(args.candidates_jsonl) if args.candidates_jsonl else None
@@ -103,7 +106,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                         if config.qdrant.enabled and not args.no_qdrant_outbox
                         else None
                     ),
-                    model_bundle=model_bundle_record(app.models, config.qdrant),
+                    model_bundle=configured_model_bundle_record(app.models, config),
+                    include_embeddings=config.postgres.publish_embeddings,
+                    include_filter_history=config.postgres.publish_filter_history,
+                    include_run_history=config.postgres.publish_run_history,
                 )
             finally:
                 engine.dispose()

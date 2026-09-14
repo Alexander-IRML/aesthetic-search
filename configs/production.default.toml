@@ -12,6 +12,10 @@ upload_concurrency = 8
 upload_checkpoint_batch_size = 256
 upload_max_attempts = 4
 upload_retry_base_seconds = 0.5
+publish_corpus_renditions = true
+corpus_source = "raw"
+corpus_role = "original"
+corpus_namespace = "corpus/originals"
 
 [manifests]
 local_dir = "data/production/manifests"
@@ -31,6 +35,9 @@ pool_timeout_seconds = 10
 statement_timeout_ms = 15000
 telemetry_retention_days = 180
 outbox_batch_size = 100
+publish_embeddings = true
+publish_filter_history = true
+publish_run_history = true
 
 [qdrant]
 # The checked-in development stack supplies this local service. Qdrant Cloud
@@ -60,3 +67,54 @@ max_results_per_artist = 2
 require_sfw = true
 require_bluesky_accept = true
 promote_after_sync = true
+
+[faiss]
+# Opt-in shadow/scale backend. Snapshots are immutable and data/ is ignored.
+enabled = false
+artifact_root = "data/indexes/faiss"
+active_pointer = "active.json"
+alias_name = "artworks_faiss_active"
+clip_dimension = 512
+csd_dimension = 768
+clip_pq_subquantizers = 32
+csd_pq_subquantizers = 48
+pq_bits = 8
+nlist = 4096
+nprobe = 32
+flat_fallback_threshold = 50000
+training_sample_size = 250000
+add_batch_size = 4096
+prefetch_limit = 500
+rerank_limit = 500
+fusion_limit = 100
+max_results_per_artist = 2
+rrf_k = 60
+require_sfw = true
+require_bluesky_accept = true
+minimum_mean_recall = 0.90
+maximum_search_p95_ms = 250.0
+verify_checksums_on_load = false
+
+[scale_budget]
+target_points = 10000000
+monthly_budget_usd = 50.0
+minimum_headroom_usd = 5.0
+vector_host_monthly_usd = 24.0
+edge_compute_monthly_usd = 5.0
+metadata_database_monthly_usd = 5.0
+observability_monthly_usd = 0.0
+contingency_monthly_usd = 5.0
+object_storage_gb_monthly_usd = 0.015
+hot_image_cache_fraction = 0.01
+average_cached_image_bytes = 62500
+metadata_bytes_per_point = 320
+retained_snapshot_copies = 2
+store_exact_fp16_rerank_vectors = true
+
+[local_retention]
+# Local image paths remain durable in the alpha. The 10M profile opts into
+# post-archive cleanup because Bluesky is its canonical media source.
+enabled = false
+delete_raw = true
+delete_processed = true
+require_source_reference = true

@@ -14,6 +14,8 @@ def test_default_search_api_contract_is_fixed_and_private() -> None:
     assert config.result_limit == 10
     assert config.candidate_telemetry_limit == 100
     assert config.feedback_rate_limit_requests == 120
+    assert config.max_concurrent_inferences == 1
+    assert config.max_pending_inferences == 2
     assert config.catalog_backend == "sqlite"
     assert config.serve_local_images is True
     assert config.trust_proxy_headers is False

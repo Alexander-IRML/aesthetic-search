@@ -2,6 +2,7 @@
 # Airflow uses its own upstream constraints in addition to these application pins.
 alembic==1.19.1
 fastapi==0.141.1
+faiss-cpu==1.15.0
 httpx==0.28.1
 imagehash==4.3.2
 numpy==2.5.1

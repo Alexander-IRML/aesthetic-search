@@ -6,6 +6,17 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class RetrievalWeights(BaseModel):
+    """Experimental coordinate-half weights applied before cosine retrieval."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    clip_first_half: float = Field(default=1.0, ge=0.1, le=2.0)
+    clip_second_half: float = Field(default=1.0, ge=0.1, le=2.0)
+    csd_first_half: float = Field(default=1.0, ge=0.1, le=2.0)
+    csd_second_half: float = Field(default=1.0, ge=0.1, le=2.0)
+
+
 class MatchEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -62,7 +73,9 @@ class ModelContract(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     bundle_version: str
+    vector_backend: Literal["qdrant", "faiss"]
     index_alias: str
+    index_version: str
     clip_model: str
     clip_revision: str
     csd_model: str
@@ -78,8 +91,21 @@ class ImageSearchResponse(BaseModel):
     query_modality: Literal["image"] = "image"
     result_count: int = Field(ge=0)
     results: list[ArtworkSearchResult]
+    retrieval_weights: RetrievalWeights = Field(default_factory=RetrievalWeights)
     model: ModelContract
     timing: SearchTiming
+
+
+class SiteVisitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_key: str = Field(min_length=8, max_length=128)
+
+
+class SiteVisitResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["recorded", "disabled"]
 
 
 class ResultFeedbackRequest(BaseModel):

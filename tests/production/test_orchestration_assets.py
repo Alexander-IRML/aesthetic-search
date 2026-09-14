@@ -57,6 +57,20 @@ def test_airflow_container_has_isolated_supported_runtime() -> None:
     assert "../../data/qdrant:/qdrant/storage" in compose["services"]["qdrant"]["volumes"]
 
 
+def test_airflow_intake_can_switch_to_bounded_creator_discovery() -> None:
+    source = (ROOT / "orchestration/airflow/dags/artsearch_intake.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"discovery_enabled": Param(False' in source
+    assert '"discovery_creator_budget": Param(200' in source
+    assert '"discovery_max_tasks": Param(500' in source
+    assert '"artsearch-discovery"' in source
+    assert '"--creator-budget"' in source
+    assert '"--media-budget"' in source
+    assert '"--max-tasks"' in source
+
+
 def test_docker_context_excludes_private_corpus_and_local_secrets() -> None:
     patterns = set((ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines())
 

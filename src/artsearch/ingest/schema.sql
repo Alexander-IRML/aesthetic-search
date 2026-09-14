@@ -136,7 +136,7 @@ CREATE TABLE IF NOT EXISTS artwork_filter_routes (
 
 CREATE TABLE IF NOT EXISTS artwork_objects (
     artwork_id      TEXT NOT NULL REFERENCES artworks(artwork_id),
-    role            TEXT NOT NULL CHECK (role IN ('original')),
+    role            TEXT NOT NULL CHECK (role IN ('original', 'display', 'thumbnail')),
     object_key      TEXT NOT NULL,
     object_uri      TEXT NOT NULL,
     content_sha256  TEXT NOT NULL,

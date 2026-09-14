@@ -4,12 +4,16 @@ Status: implemented local operator surface
 
 Implemented: 2026-08-17
 
+Updated: 2026-09-12
+
 The model operations dashboard is a localhost operator application for
 maintaining corpus, classifier, retrieval, and ANN quality. Its monitoring
 tabs read the canonical SQLite database and append-only evaluation artifacts.
 Its review tab displays explicitly revealed local evidence and writes immutable
-human labels and relevance judgments. It does not load model weights,
-recompute embeddings, or modify thresholds.
+human labels and relevance judgments. The Discovery tab also exposes bounded local
+operator jobs for incremental Bluesky intake and creator-graph expansion. Model
+weights are loaded only by those background pipeline commands, never by a normal
+dashboard snapshot.
 
 ## Launch
 
@@ -24,6 +28,11 @@ Run the dashboard from the repository:
 ```bash
 .venv/bin/artsearch-model-dashboard
 ```
+
+When present, the command loads the ignored `deploy/alpha/.env` file and selects
+`configs/production.alpha-cloud.local.toml`; otherwise it uses the checked-in local
+production config. Secret values are inherited by child jobs and are never returned
+to the browser or written into job status.
 
 The server binds to `127.0.0.1`, selects ports `8765` through `8774` if needed,
 opens the system browser, and refreshes its snapshot every 30 seconds. Closing
@@ -124,6 +133,26 @@ not empirically validated universal constants.
 - recent pipeline runs, processed/skipped/error counts, and object publication;
 - decision recency, monitoring targets, and project-relative evidence sources.
 
+### Discovery And Corpus Control
+
+- a canvas cluster map of accepted corpus artists and PostgreSQL discovery
+  candidates;
+- compact per-artist pulled-post keys derived from canonical AT URIs, with aggregate
+  decision state and image count;
+- typed follow/suggested-account graph edges when PostgreSQL is online;
+- **Pull unscanned posts**, which seeds missing high-water marks from prior decisions
+  and runs the existing incremental, deduplicated SigLIP-to-SQLite pipeline;
+- **Expand similar accounts**, with one-to-three-step depth and a hard total Bluesky
+  HTTP-attempt budget;
+- one background job at a time, persisted status, bounded logs, elapsed time, and
+  final pipeline/campaign counters.
+
+The refresh action downloads only newly observed candidates after the high-water
+boundary. The expansion action rotates through existing corpus DIDs so repeated
+runs do not always start from the same artists. Existing-corpus seeds are trusted
+for the first graph hop; every newly discovered account still passes profile safety,
+media sampling, SigLIP qualification, and normal review policy.
+
 ### Review And Feedback
 
 The artwork-gate workspace reads the latest canonical SigLIP decision for each
@@ -137,8 +166,8 @@ and the candidate's post and alt text. A review records:
 - an optional reviewer note and the exact source decision/model/config version.
 
 The retrieval workspace samples a fresh query from the current compatible
-embedding cohort and runs the selected exact mode: ensemble, CLIP subject,
-CLIP subject, CSD style, or their ensemble. Each useful/not-useful click records
+embedding cohort and runs the selected exact mode: ensemble, CLIP subject, or
+CSD style. Each useful/not-useful click records
 the query and candidate IDs, mode, rank, result count, component scores,
 shortlist metadata, corpus fingerprint, model version, session ID, and reviewer.
 These judgments immediately enter the retrieval metrics on the next snapshot.
@@ -184,7 +213,7 @@ Automatic discovery uses:
 | Retrieval relevance | `data/retrieval/**/judgments*.jsonl` |
 | ANN fidelity | newest `data/retrieval/**/qdrant_ann*.json` |
 | Qdrant live state | configured REST endpoint, when probing is enabled |
-| Online search and feedback | aggregate PostgreSQL product telemetry |
+| Online search, feedback, and approximate unique visitors | aggregate PostgreSQL product telemetry; visitor IPs are HMAC-hashed before persistence |
 | Daily scheduler | `configs/intake_scheduler.default.toml` plus ignored scheduler JSONL events |
 | Incremental source state | `bluesky_actor_intake_state` and `bluesky_roster_intake_state` in SQLite |
 
@@ -194,6 +223,9 @@ append-only JSONL streams; public result feedback appends immutable PostgreSQL
 events. JSONL decisions are deduplicated to the latest
 `(candidate_id, source_cid)` version, labels resolve to their exact decision
 snapshot, and retrieval judgments use latest-event evaluation semantics.
+
+The header **Corpus intake** control opens and focuses these Discovery controls. It
+also retains the `artsearch:operator-action` browser event for local integrations.
 
 ## Current Limitations
 

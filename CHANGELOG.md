@@ -3,6 +3,74 @@
 Project changes worth remembering live here. Keep entries concise and focused on
 what changed, why it matters, and any verification that was done.
 
+## v0.7.0 - 2026-09-14
+
+### Added
+
+- Added a provenance-preserving corpus-discovery subsystem with PostgreSQL
+  campaign, creator, graph, frontier, exclusion, review, and removal records;
+  bounded Bluesky expansion; progressive SigLIP qualification; and resumable
+  campaign summaries.
+- Added corpus controls to the local operations dashboard: a compact artist and
+  post graph, pull-unseen operation, bounded multi-hop expansion, request-budget
+  controls, rotating seeds, and background job status.
+- Added duplicate DID accounting and a shared maximum of 25 unique expansion
+  children per creator across social-neighbor sources.
+- Added a budget-constrained ten-million-vector architecture path with a common
+  retrieval backend contract, compressed FAISS snapshot tooling, capacity and
+  retention gates, scale-oriented example configurations, ADR, and runbook.
+- Added pull-request CI and protected alpha deployment workflows covering Python,
+  PostgreSQL migrations, Docker contracts, Worker type checking, release-version
+  agreement, and post-deployment edge smoke checks.
+- Added four experimental query controls that independently scale each half of
+  the CLIP and CSD embeddings before cosine renormalization. The selected values
+  are returned by the API and persisted with query telemetry.
+- Added a privacy-preserving site-visit beacon and dashboard counts for distinct
+  keyed IP hashes over all time, 24 hours, and the configured reporting window.
+
+### Changed
+
+- Reworked online serving around an asynchronous ASGI coordinator, async Qdrant
+  and PostgreSQL access, one bounded model executor per service, explicit queue
+  admission, cancellation-safe cleanup, and per-query telemetry ordering.
+- Expanded the public stream-day deployment from one Container to three
+  deterministic source-IP shards. Each shard retains one CLIP/CSD model owner
+  and 24 bounded waiters, for 75 active-or-waiting requests across the pool.
+- Raised edge search limits for a small public event while retaining source-IP
+  and edge-location throttles, upload limits, a hard three-Container ceiling,
+  and 15-minute scale-to-zero behavior.
+- Split the Cloudflare serving image and pinned model cache into bounded OCI
+  layers, excluded offline FAISS/data dependencies from the API image, and kept
+  runtime model loading offline from Hugging Face.
+- Standardized development, CI, application images, and deployment metadata on
+  the Python 3.12 line with exact project-level version agreement checks.
+
+### Safety And Privacy
+
+- Raw visitor IP addresses are never persisted by ArtSearch. Canonical addresses
+  are transformed with HMAC-SHA256 and a Cloudflare-managed secret before they
+  enter session metadata.
+- Query images remain memory-only, rejected corpus media is not retained, and
+  R2 objects remain private behind the same-origin Worker route.
+- Local environment files, cloud configuration, corpus bytes, databases, model
+  weights, generated vectors, and review artifacts remain ignored by Git and
+  excluded from Docker build contexts.
+
+### Verified
+
+- Full Python suite: 315 tests passed.
+- Ruff, release metadata, Worker binding generation, and TypeScript validation
+  passed.
+- The Cloudflare rollout completed with three healthy-capable Container shards;
+  the public edge, static workbench, warm-state endpoint, visit beacon, Neon
+  metric query, and scale-to-zero transition were checked live.
+- The verification beacon appeared in the local dashboard as one distinct keyed
+  visitor. This is test evidence, not a user-count claim.
+
+See [the detailed v0.7.0 release notes](docs/releases/v0.7.0.md) for the shipped
+architecture, measured evidence, stream-day operating procedure, and known
+limits.
+
 ## v0.6.0 - 2026-09-05
 
 ### Added

@@ -17,6 +17,12 @@ candidates.
 > style representation. Historical patch-storage calculations below have been
 > replaced with the current CLIP/CSD footprint.
 
+> **Ten-million update (2026-09-08):** the hard ceiling is now USD 50/month and
+> the long-range target is 10,000,000 searchable artworks. ADR 0003 and
+> `docs/ten_million_scale_runbook.md` supersede this document for vector serving,
+> image retention, and 10M cost arithmetic. The milestone and intake analysis
+> below remains useful historical context for the path through the first 1M.
+
 ## Recorded Targets
 
 | Input | Decision |

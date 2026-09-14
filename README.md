@@ -1,11 +1,13 @@
 # ArtSearch
 
+[![CI](https://github.com/Alexander-IRML/aesthetic-search/actions/workflows/ci.yml/badge.svg)](https://github.com/Alexander-IRML/aesthetic-search/actions/workflows/ci.yml)
+
 Data preparation and baseline visual search pipeline for artwork.
 
-Current release: **v0.6.0**. See the
-[v0.6.0 release notes](docs/releases/v0.6.0.md) for the public alpha workbench,
-post-retrieval assistant, detailed latency telemetry, and CSD inference
-optimization record.
+Current release: **v0.7.0**. See the
+[v0.7.0 release notes](docs/releases/v0.7.0.md) for corpus discovery controls,
+the budget-constrained ten-million retrieval path, asynchronous serving, CI/CD,
+and the three-shard stream-day public demo.
 
 The current MVP ingests explicitly registered artist folders from `data/raw/`,
 standardizes images into 448x448 JPEGs in `data/processed/`, tracks metadata in
@@ -31,6 +33,10 @@ component flow in
 The Qdrant named-vector schema, safety gate, CLIP/CSD fusion funnel, sync and
 repair behavior, ANN evaluation, and local/Cloud runbook are in
 [docs/qdrant_retrieval.md](docs/qdrant_retrieval.md).
+The staged ten-million-vector path, hard USD 50/month capacity model, compressed
+FAISS snapshots, promotion gates, and rollout checklist are in
+[ADR 0003](docs/adr/0003-budget-constrained-ten-million-retrieval.md) and the
+[ten-million retrieval runbook](docs/ten_million_scale_runbook.md).
 The executable local health dashboard, metric definitions, drift windows, and
 privacy boundary are documented in
 [docs/model_operations_dashboard.md](docs/model_operations_dashboard.md).
@@ -46,6 +52,32 @@ Docker topology are in
 The public upload-to-search API, same-origin frontend, security limits, model
 compatibility contract, and hosted deployment boundary are documented in
 [docs/public_image_search_api.md](docs/public_image_search_api.md).
+The pull-request verification, disposable PostgreSQL migration test, protected
+Cloudflare alpha deployment, required GitHub secrets, and rollback boundary are
+documented in [docs/ci_cd.md](docs/ci_cd.md).
+The provenance-preserving Bluesky creator graph, bounded crawl frontier, progressive
+media qualification, human review, and current phase boundaries are documented in
+[docs/corpus_discovery.md](docs/corpus_discovery.md).
+
+## Development Environment
+
+ArtSearch uses CPython 3.12.14 for local development, application containers,
+CI, and deployment jobs. The official Airflow image uses the same Python 3.12
+ABI and controls its own security patch. `.python-version` is the canonical
+application pin; CI reads it directly and container builds verify it.
+
+With `uv` installed, create or repair the local environment with:
+
+```bash
+scripts/bootstrap_dev.sh
+# Use this only when replacing an environment created with another Python:
+scripts/bootstrap_dev.sh --replace
+source .venv/bin/activate
+```
+
+The bootstrap installs the constrained CPU model stack used by CI and the
+deployed search container. A replaced environment is preserved in an ignored
+`.venv-backup-*` directory until it is deliberately removed.
 
 ## Container Workflow
 
@@ -80,12 +112,13 @@ and returns a fixed top 10. The upload is not persisted.
 
 ## Cloud Alpha
 
-The public resume demo is deployed as a Cloudflare Worker plus one scale-to-zero
-CPU Container. The Worker serves the frontend at the edge, rate-limits public
-search and feedback requests, and streams approved R2 media; the Container owns
-exact CLIP/CSD query encoding and calls Qdrant Cloud plus Neon PostgreSQL. Only
-an actual API request wakes model compute, and search traffic does not use the
-developer laptop.
+The public resume demo is deployed as a Cloudflare Worker plus three
+deterministically routed, scale-to-zero CPU Container shards. The Worker serves
+the frontend at the edge, rate-limits public search and feedback requests, and
+streams approved R2 media; each Container owns one exact CLIP/CSD query encoder
+and calls Qdrant Cloud plus Neon PostgreSQL. A pseudonymous page-view beacon
+warms the visitor's shard before search, and traffic never uses the developer
+laptop.
 
 After the top ten render, an edge-only Workers AI 1B assistant summarizes their
 bounded Bluesky post and alt-text metadata. A constrained agent tool can rerun
@@ -102,12 +135,13 @@ cp configs/production.alpha-cloud.example.toml \
   configs/production.alpha-cloud.local.toml
 .venv/bin/artsearch-deploy configure-postgres
 .venv/bin/artsearch-deploy generate-session-secret
+.venv/bin/artsearch-deploy generate-visitor-secret
 .venv/bin/artsearch-deploy preflight \
   --production-config configs/production.alpha-cloud.local.toml
 ```
 
 The first preflight phase requires only R2 and Qdrant credentials. `--phase api`
-adds PostgreSQL and session-secret requirements; `--phase full` reserves Modal
+adds PostgreSQL, session-secret, and visitor-hash-secret requirements; `--phase full` reserves Modal
 credentials for a future external inference worker. Secret values are checked
 for presence but are never printed. The optional private intake control-plane
 scaffold lives under `deploy/alpha/`; the deployed query service lives under
@@ -233,6 +267,37 @@ artsearch-qdrant sync
 artsearch-qdrant evaluate-ann --sample-size 50 --top-k 100
 ```
 
+For the hard USD 50/month, ten-million-vector target, ArtSearch also has an
+explicit shadow backend based on independent compressed FAISS CLIP and CSD
+indexes plus bounded exact FP16 reranking. It shares Qdrant's eligibility
+contract, preserves separate component evidence, and cannot become active
+without passing exact-recall, p95-latency, snapshot-integrity, model-lineage,
+and cost-headroom gates. The current Qdrant alpha remains unchanged while this
+path is benchmarked at 100k and 1M:
+
+```bash
+python -m pip install -e '.[scale]'
+artsearch-faiss capacity-plan \
+  --production-config configs/production.scale-10m.example.toml
+artsearch-faiss build \
+  --production-config configs/production.scale-10m.example.toml \
+  --snapshot-version faiss-shadow-001
+artsearch-faiss evaluate \
+  --production-config configs/production.scale-10m.example.toml \
+  --snapshot-version faiss-shadow-001 \
+  --sample-size 500 --top-k 100 \
+  --output data/indexes/reports/faiss-shadow-001.json
+```
+
+The checked-in assumptions project USD 39.99/month at 10M points with USD
+10.01 headroom. That number is an executable planning gate, not a provider
+quote. The scale profile keeps source references rather than ten million full
+originals, publishes compact PostgreSQL metadata without duplicate vector or
+audit payloads, and can prune local working images only after current CLIP/CSD
+features and durable run evidence exist. Use
+`configs/artwork_filter.scale-10m.example.toml` for scale intake so rejected
+candidate SigLIP embeddings are not retained indefinitely.
+
 The production control plane uses SQLAlchemy Core, Alembic, psycopg 3, Neon
 pooled/direct connections, PostgreSQL RLS-ready product telemetry, compact
 `halfvec` archival CLIP/CSD values, and a transactional Qdrant outbox:
@@ -251,6 +316,31 @@ reserved for Alembic and cutover publication. See the
 [PostgreSQL control-plane runbook](docs/postgresql_control_plane.md) before a
 live migration.
 
+Corpus discovery can now replace a static Bluesky roster with a bounded,
+self-expanding creator frontier. It preserves each source observation, qualifies a
+small media sample through the existing SigLIP pipeline, deepens promising creators,
+and queues outbound/suggested graph expansion:
+
+```bash
+artsearch-discovery run \
+  --production-config configs/production.alpha-cloud.local.toml \
+  --creator-budget 20 --media-budget 200 --max-tasks 50 \
+  --seed known-artist.bsky.social
+
+artsearch-discovery status \
+  --production-config configs/production.alpha-cloud.local.toml
+```
+
+Apply Alembic revision `20260909_0004` before the first run. The Airflow intake DAG
+uses the same flow when `discovery_enabled=true`; accepted work continues through
+the existing CLIP/CSD, object-store, PostgreSQL, and Qdrant stages. The model
+operations dashboard exposes discovery health plus an approve/defer/reject/block
+creator-review workspace. Its **Discovery** tab also renders the current artist and
+compact pulled-post graph, starts an incremental pull for existing artists, and
+grows outbound/suggested-account neighborhoods with explicit depth and AppView
+request limits. Dashboard jobs run one at a time and persist progress under the
+ignored `data/control/` boundary.
+
 Public image search persists rolling p50/p95 latency, top-100 ranked candidate
 evidence, top-10 impressions, and Great/Good/Bad relevance feedback. The model
 operations dashboard reports search volume, complete-query Precision@10,
@@ -258,6 +348,10 @@ graded nDCG@10, exact-versus-HNSW Recall@100, and durable pipeline-stage success
 The public workbench also exposes a warm/cold model light and a last-request
 trace spanning browser, edge startup, CLIP, CSD internals, Qdrant, catalog, and
 residual telemetry latency. Query telemetry initialization overlaps inference.
+The FastAPI coordinator now releases its bounded model owner before awaiting
+async Qdrant and PostgreSQL work, so remote I/O for one query can overlap model
+encoding for the next; feedback ordering is enforced per query rather than by a
+global telemetry queue.
 The measured CPU profile and rejected quantization experiments are recorded in
 [docs/csd_inference_optimization.md](docs/csd_inference_optimization.md).
 

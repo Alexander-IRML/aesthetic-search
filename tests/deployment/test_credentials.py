@@ -5,6 +5,7 @@ import pytest
 from artsearch.deployment.credentials import (
     derive_neon_connection_urls,
     ensure_session_secret,
+    ensure_visitor_hash_secret,
     write_neon_connection_string,
     write_postgres_credentials,
     write_qdrant_credentials,
@@ -160,3 +161,25 @@ def test_ensure_session_secret_rejects_existing_short_value(tmp_path: Path) -> N
 
     with pytest.raises(ValueError, match="shorter than 32 bytes"):
         ensure_session_secret(destination, template=destination)
+
+
+def test_ensure_visitor_hash_secret_generates_once_without_printing_it(
+    tmp_path: Path,
+) -> None:
+    template = tmp_path / "example.env"
+    destination = tmp_path / ".env"
+    template.write_text("ARTSEARCH_VISITOR_HASH_SECRET=\n", encoding="utf-8")
+
+    written, generated = ensure_visitor_hash_secret(destination, template=template)
+    first = written.read_text(encoding="utf-8")
+    written_again, generated_again = ensure_visitor_hash_secret(
+        destination,
+        template=template,
+    )
+
+    assert generated is True
+    assert generated_again is False
+    assert written_again.read_text(encoding="utf-8") == first
+    secret = first.split("ARTSEARCH_VISITOR_HASH_SECRET=", 1)[1].strip()
+    assert len(secret.encode("utf-8")) >= 32
+    assert destination.stat().st_mode & 0o777 == 0o600

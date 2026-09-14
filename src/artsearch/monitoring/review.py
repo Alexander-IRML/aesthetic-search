@@ -28,8 +28,12 @@ from artsearch.artwork_filter.evaluation import (
 from artsearch.artwork_filter.image_io import HttpOrLocalImageLoader
 from artsearch.artwork_filter.labels import JSONLLabelStore, iter_label_history, latest_labels
 from artsearch.artwork_filter.schemas import ArtworkLabel, FilterResult, ImageCandidate
+from artsearch.discovery.models import ReviewDecision
+from artsearch.discovery.repository import DiscoveryRepository
 from artsearch.ingest.config import load_config
 from artsearch.monitoring.config import HumanReviewConfig
+from artsearch.postgres.database import build_engine
+from artsearch.production.config import load_production_config
 from artsearch.retrieval.evaluation import (
     JSONLRetrievalJudgmentStore,
     RetrievalJudgment,
@@ -85,6 +89,7 @@ class HumanReviewService:
         *,
         app_config_path: str | Path,
         filter_config_path: str | Path,
+        production_config_path: str | Path = "configs/production.default.toml",
         review_config: HumanReviewConfig,
         filter_label_path: str | Path,
         retrieval_judgment_path: str | Path,
@@ -94,6 +99,7 @@ class HumanReviewService:
     ) -> None:
         self.app = load_config(app_config_path)
         self.filter_config = load_artwork_filter_config(filter_config_path)
+        self.production = load_production_config(production_config_path)
         self.review_config = review_config
         self.filter_label_path = _resolve(self.app.root_dir, filter_label_path)
         self.retrieval_judgment_path = _resolve(
@@ -143,6 +149,10 @@ class HumanReviewService:
                     self.retrieval_judgment_path,
                 ),
             },
+            "discovery": {
+                "enabled": self.production.postgres.enabled,
+                "decisions": [item.value for item in ReviewDecision],
+            },
             "annotator": self.annotator,
             "conceal_media": self.review_config.conceal_media_by_default,
             "content_labels": [item.value for item in HumanContentLabel],
@@ -153,6 +163,39 @@ class HumanReviewService:
                 for mode in SUPPORTED_RETRIEVAL_MODES
             ],
         }
+
+    def discovery_item(
+        self,
+        *,
+        state: str = "needs_review",
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        with self._discovery_repository() as repository:
+            return repository.review_queue(state=state, offset=offset)
+
+    def submit_discovery_review(self, payload: dict[str, Any]) -> dict[str, Any]:
+        did = str(payload.get("did", "")).strip()
+        if not did:
+            raise ValueError("creator DID is required")
+        decision = ReviewDecision(payload.get("decision"))
+        note = str(payload.get("note", ""))
+        with self._write_lock, self._discovery_repository() as repository:
+            state = repository.review_creator(
+                did,
+                decision,
+                reviewer=self.annotator,
+                note=note,
+            )
+        self._written()
+        return {
+            "did": did,
+            "state": state.value,
+            "decision": decision.value,
+            "summary": self.summary(),
+        }
+
+    def discovery_media(self, candidate_id: str) -> ReviewMedia:
+        return self.filter_media(candidate_id)
 
     def filter_item(
         self,
@@ -537,6 +580,16 @@ class HumanReviewService:
             yield connection
         finally:
             connection.close()
+
+    @contextmanager
+    def _discovery_repository(self) -> Iterator[DiscoveryRepository]:
+        if not self.production.postgres.enabled:
+            raise ValueError("discovery review requires PostgreSQL to be enabled")
+        engine = build_engine(self.production.postgres)
+        try:
+            yield DiscoveryRepository(engine)
+        finally:
+            engine.dispose()
 
     def _written(self) -> None:
         if self.on_write is not None:

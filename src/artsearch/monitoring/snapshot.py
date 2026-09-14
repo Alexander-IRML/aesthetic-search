@@ -19,6 +19,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from artsearch import __version__
 from artsearch.artwork_filter.config import load_artwork_filter_config
 from artsearch.artwork_filter.prompt_bank import load_prompt_bank
+from artsearch.discovery.repository import DiscoveryRepository
 from artsearch.ingest.config import AppConfig, load_config
 from artsearch.monitoring.config import MonitoringConfig, load_monitoring_config
 from artsearch.monitoring.review import evaluate_filter_labels_from_database
@@ -39,6 +40,8 @@ class MonitoringInputs:
     prompt_config_path: Path = Path("configs/artwork_filter.prompts.v1.toml")
     production_config_path: Path = Path("configs/production.default.toml")
     monitoring_config_path: Path = Path("configs/model_dashboard.default.toml")
+    bluesky_config_path: Path = Path("configs/bluesky.default.toml")
+    discovery_config_path: Path = Path("configs/discovery.default.toml")
     decisions_paths: tuple[Path, ...] = ()
     retrieval_judgment_paths: tuple[Path, ...] = ()
     filter_evaluation_path: Path | None = None
@@ -91,6 +94,7 @@ def build_monitoring_snapshot(inputs: MonitoringInputs | None = None) -> dict[st
         monitoring,
         ann_evaluation,
     )
+    discovery = _discovery_snapshot(production, errors)
     smoke = _load_optional_json(sources["siglip_smoke"], "siglip_smoke", errors)
     qdrant = _qdrant_snapshot(
         production,
@@ -124,11 +128,13 @@ def build_monitoring_snapshot(inputs: MonitoringInputs | None = None) -> dict[st
         monitoring,
         errors,
     )
+    alerts.extend(_discovery_alerts(discovery))
+    alerts.sort(key=lambda item: (_severity_rank(item["severity"]), item["area"], item["id"]))
     level = _overall_level(alerts)
     measured = _evidence_coverage(filter_evaluation, retrieval, ann_evaluation)
 
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "generated_at": generated_at.isoformat(),
         "application_version": __version__,
         "monitoring": {
@@ -148,6 +154,7 @@ def build_monitoring_snapshot(inputs: MonitoringInputs | None = None) -> dict[st
         "ann_evaluation": ann_evaluation,
         "qdrant": qdrant,
         "product": product,
+        "discovery": discovery,
         "operations": operations,
         "siglip_smoke": smoke,
         "lineage": {
@@ -177,6 +184,88 @@ def build_monitoring_snapshot(inputs: MonitoringInputs | None = None) -> dict[st
         },
         "sources": {key: _source_labels(app.root_dir, value) for key, value in sources.items()},
     }
+
+
+def _discovery_snapshot(
+    production: ProductionConfig,
+    errors: list[dict[str, str]],
+) -> dict[str, Any]:
+    if not production.postgres.enabled:
+        return {
+            "status": "disabled",
+            "creators": 0,
+            "observations": 0,
+            "edges": 0,
+            "creator_states": {},
+            "safety_states": {},
+            "frontier_states": {},
+            "frontier_actions": {},
+            "source_yield": [],
+            "campaigns": [],
+            "latest_coverage": None,
+            "active_exclusions": 0,
+            "open_removal_requests": 0,
+        }
+    engine = None
+    try:
+        engine = build_engine(production.postgres)
+        return DiscoveryRepository(engine).snapshot()
+    except (PostgresConfigurationError, SQLAlchemyError, OSError, ValueError) as exc:
+        errors.append({"area": "discovery", "message": f"Discovery metrics failed: {exc}"})
+        return {
+            "status": "offline",
+            "error": str(exc),
+            "creators": 0,
+            "observations": 0,
+            "edges": 0,
+            "creator_states": {},
+            "safety_states": {},
+            "frontier_states": {},
+            "frontier_actions": {},
+            "source_yield": [],
+            "campaigns": [],
+            "latest_coverage": None,
+            "active_exclusions": 0,
+            "open_removal_requests": 0,
+        }
+    finally:
+        if engine is not None:
+            engine.dispose()
+
+
+def _discovery_alerts(discovery: dict[str, Any]) -> list[dict[str, Any]]:
+    if discovery.get("status") != "online":
+        return []
+    alerts: list[dict[str, Any]] = []
+    dead = int(discovery.get("frontier_states", {}).get("dead", 0))
+    if dead:
+        alerts.append(
+            _alert(
+                "discovery.frontier.dead",
+                "warning",
+                "discovery",
+                "Discovery frontier has dead work",
+                f"{dead} tasks exhausted their bounded retries.",
+                "Inspect source and hydration errors before retrying those graph regions.",
+                dead,
+                0,
+            )
+        )
+    removals = int(discovery.get("open_removal_requests", 0))
+    if removals:
+        alerts.append(
+            _alert(
+                "discovery.removals.open",
+                "warning",
+                "policy",
+                "Removal requests need review",
+                f"{removals} removal or reporting requests remain open.",
+                "Resolve requests before the next public corpus publication.",
+                removals,
+                0,
+            )
+        )
+    return alerts
 
 
 def _resolve_sources(root: Path, inputs: MonitoringInputs) -> dict[str, Any]:

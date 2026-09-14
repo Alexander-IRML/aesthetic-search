@@ -16,6 +16,19 @@ def test_candidates_from_image_embed_extracts_stable_bluesky_fields():
                 "text": "finished drawing",
                 "createdAt": "2026-07-16T12:30:00.000Z",
                 "langs": ["en"],
+                "embed": {
+                    "$type": "app.bsky.embed.images",
+                    "images": [
+                        {
+                            "image": {
+                                "$type": "blob",
+                                "ref": {"$link": "bafy-image"},
+                                "mimeType": "image/jpeg",
+                                "size": 12345,
+                            }
+                        }
+                    ],
+                },
             },
             "embed": {
                 "$type": "app.bsky.embed.images#view",
@@ -40,6 +53,7 @@ def test_candidates_from_image_embed_extracts_stable_bluesky_fields():
     assert candidate.author_handle == "artist.example"
     assert candidate.post_uri == item["post"]["uri"]
     assert candidate.post_cid == "bafy-post"
+    assert candidate.blob_cid == "bafy-image"
     assert candidate.image_index == 0
     assert candidate.thumbnail_url == "https://cdn.example/thumb.jpg"
     assert candidate.fullsize_url == "https://cdn.example/full.jpg"

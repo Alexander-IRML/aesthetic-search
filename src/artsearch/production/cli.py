@@ -16,7 +16,7 @@ from artsearch.production.object_store import (
     file_identity,
     object_ref_json,
 )
-from artsearch.production.publisher import candidate_ids_from_jsonl, publish_corpus_originals
+from artsearch.production.publisher import candidate_ids_from_jsonl, publish_corpus_images
 
 
 DEFAULT_CONFIG = "configs/production.default.toml"
@@ -44,6 +44,24 @@ def main() -> None:
             return
 
         config = load_production_config(args.config)
+        if args.command == "prune-local-images":
+            from artsearch.ingest.config import load_config
+            from artsearch.production.retention import apply_local_image_retention
+
+            app = load_config(args.app_config)
+            candidate_ids = candidate_ids_from_jsonl(
+                args.decisions,
+                required_decision="accept",
+            )
+            result = apply_local_image_retention(
+                args.database,
+                app,
+                config.local_retention,
+                candidate_ids=candidate_ids,
+                apply=args.apply,
+            )
+            print(json.dumps(result.to_dict(), sort_keys=True))
+            return
         store = build_object_store(config.object_store)
         if args.command == "publish-file":
             source = Path(args.path)
@@ -69,11 +87,16 @@ def main() -> None:
                 )
             elif args.candidates:
                 candidate_ids = candidate_ids_from_jsonl(args.candidates)
-            result = publish_corpus_originals(
+            source = args.source or config.object_store.corpus_source
+            role = args.role or config.object_store.corpus_role
+            namespace = args.namespace or config.object_store.corpus_namespace
+            result = publish_corpus_images(
                 args.database,
                 args.project_root,
                 store,
-                namespace=args.namespace,
+                source=source,
+                role=role,
+                namespace=namespace,
                 candidate_ids=candidate_ids,
                 upload_concurrency=(
                     args.upload_concurrency or config.object_store.upload_concurrency
@@ -104,7 +127,7 @@ def _build_parser() -> argparse.ArgumentParser:
     manifest.add_argument("--output", required=True)
     manifest.add_argument(
         "--database",
-        help="Optional SQLite database used to attach durable accepted-original object URIs.",
+        help="Optional SQLite database used to attach the preferred durable object URI.",
     )
 
     metrics = subparsers.add_parser(
@@ -137,12 +160,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     corpus = subparsers.add_parser(
         "publish-corpus",
-        help="Publish uncheckpointed accepted originals and record their object URIs.",
+        help="Publish configured accepted image renditions and record their object URIs.",
     )
     _add_object_config(corpus)
     corpus.add_argument("--database", default="data/artsearch.db")
     corpus.add_argument("--project-root", default=".")
-    corpus.add_argument("--namespace", default="corpus/originals")
+    corpus.add_argument("--namespace")
+    corpus.add_argument("--source", choices=["raw", "processed"])
+    corpus.add_argument("--role", choices=["original", "display"])
     corpus.add_argument(
         "--upload-concurrency",
         type=_positive_int,
@@ -156,6 +181,20 @@ def _build_parser() -> argparse.ArgumentParser:
     scope.add_argument(
         "--decisions",
         help="Publish only ACCEPT candidate IDs in one run's decision JSONL.",
+    )
+
+    retention = subparsers.add_parser(
+        "prune-local-images",
+        help="Plan or apply configured post-embedding cleanup for one archived intake run.",
+    )
+    retention.add_argument("--config", default=DEFAULT_CONFIG)
+    retention.add_argument("--app-config", default="config/config.yaml")
+    retention.add_argument("--database", default="data/artsearch.db")
+    retention.add_argument("--decisions", required=True)
+    retention.add_argument(
+        "--apply",
+        action="store_true",
+        help="Delete eligible files; omission produces a dry-run report.",
     )
     return parser
 

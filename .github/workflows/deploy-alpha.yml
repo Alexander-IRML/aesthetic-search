@@ -1,0 +1,115 @@
+name: Deploy alpha
+
+"on":
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-alpha
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify release candidate
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Migrate and deploy
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment:
+      name: alpha
+      url: ${{ vars.ARTSEARCH_ALPHA_BASE_URL || 'https://artsearch-alpha-search.aesthetic-search-alpha.workers.dev' }}
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: ".python-version"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
+      - name: Verify protected-environment secrets
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DATABASE_DIRECT_URL: ${{ secrets.DATABASE_DIRECT_URL }}
+        run: |
+          for name in CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN DATABASE_DIRECT_URL; do
+            if [[ -z "${!name:-}" ]]; then
+              printf 'Missing required alpha environment secret: %s\n' "${name}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Verify release metadata
+        shell: bash
+        run: |
+          args=()
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            args+=(--tag "${GITHUB_REF_NAME}")
+          fi
+          python scripts/check_release_version.py "${args[@]}"
+
+      - name: Install migration runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            --constraint constraints/runtime-py312.txt \
+            ".[postgres]"
+
+      - name: Apply forward-compatible database migrations
+        env:
+          DATABASE_DIRECT_URL: ${{ secrets.DATABASE_DIRECT_URL }}
+        run: artsearch-postgres --config configs/production.cloudflare.toml upgrade
+
+      - name: Verify database revision
+        env:
+          DATABASE_DIRECT_URL: ${{ secrets.DATABASE_DIRECT_URL }}
+        run: artsearch-postgres --config configs/production.cloudflare.toml status --direct
+
+      - name: Install locked Worker dependencies
+        working-directory: deploy/cloudflare-search
+        run: npm ci
+
+      - name: Verify Docker is available for the Container image
+        run: docker info
+
+      - name: Deploy Cloudflare Worker and Container
+        working-directory: deploy/cloudflare-search
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npm run deploy
+
+      - name: Smoke-test edge and static application
+        shell: bash
+        env:
+          BASE_URL: ${{ vars.ARTSEARCH_ALPHA_BASE_URL || 'https://artsearch-alpha-search.aesthetic-search-alpha.workers.dev' }}
+        run: |
+          base_url="${BASE_URL%/}"
+          curl --fail --show-error --silent \
+            --retry 8 --retry-all-errors --retry-delay 5 \
+            "${base_url}/health/edge" > /tmp/artsearch-edge-health.json
+          python -c 'import json; payload=json.load(open("/tmp/artsearch-edge-health.json")); assert payload["status"] == "ok" and payload["layer"] == "cloudflare-worker", payload'
+          curl --fail --show-error --silent \
+            --retry 8 --retry-all-errors --retry-delay 5 \
+            --output /dev/null "${base_url}/search"
+          curl --fail --show-error --silent \
+            --retry 8 --retry-all-errors --retry-delay 5 \
+            --output /dev/null "${base_url}/api/runtime-status"

@@ -25,6 +25,7 @@ class ImageCandidate(BaseModel):
     author_handle: str | None = None
     post_uri: str | None = None
     post_cid: str | None = None
+    blob_cid: str | None = None
     image_index: int | None = None
     thumbnail_url: str | None = None
     fullsize_url: str | None = None

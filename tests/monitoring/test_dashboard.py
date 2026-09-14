@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -24,6 +25,11 @@ from artsearch.embed.storage import ImageEmbeddings, upsert_embedding
 from artsearch.ingest.config import load_config
 from artsearch.ingest.db import connect, init_db
 from artsearch.monitoring.config import load_monitoring_config
+from artsearch.monitoring.corpus_control import (
+    CorpusControlConflictError,
+    CorpusControlService,
+)
+from artsearch.monitoring.cli import _default_production_config, _load_private_environment
 from artsearch.monitoring.dashboard import render_monitoring_html
 from artsearch.monitoring.launcher import _windows_batch_content, install_desktop_launcher
 from artsearch.monitoring.review import HumanReviewService
@@ -129,8 +135,11 @@ maximum_top_artist_share = 0.90
         connection.execute(
             """
             INSERT INTO artists (
-                artist_id, display_name, folder_name, source_platform
-            ) VALUES ('artist-a', 'Artist A', 'artist-a', 'manual')
+                artist_id, display_name, folder_name, source_platform, source_url
+            ) VALUES (
+                'artist-a', 'Artist A', 'artist-a', 'bluesky',
+                'https://bsky.app/profile/artist-a.test'
+            )
             """
         )
         connection.execute(
@@ -403,6 +412,7 @@ def test_snapshot_aggregates_quality_drift_and_operational_health(
     assert snapshot["retrieval"]["per_mode"]["ensemble"]["mrr"] == 1.0
     assert snapshot["product"]["status"] == "disabled"
     assert snapshot["product"]["search"]["total_searches"] == 0
+    assert snapshot["product"]["visitors"]["total_unique_ips"] == 0
     assert snapshot["product"]["recall_at_100"]["measured"] is True
     assert snapshot["product"]["recall_at_100"]["mean_recall"] == 1.0
     assert "pipeline_success" in snapshot["operations"]
@@ -415,6 +425,7 @@ def test_snapshot_aggregates_quality_drift_and_operational_health(
     serialized = json.dumps(snapshot)
     assert "did:plc:" not in serialized
     assert "post text" not in serialized
+    assert "visitor_ip_hash" not in serialized
 
 
 def test_dashboard_server_exposes_ui_snapshot_and_health(
@@ -443,7 +454,70 @@ def test_dashboard_server_exposes_ui_snapshot_and_health(
     assert "ArtSearch Model Operations" in html
     assert "Data &amp; drift" in html
     assert snapshot["corpus"]["artworks"] == 2
+    assert snapshot["discovery"]["status"] == "disabled"
     assert health["status"] == "critical"
+
+
+def test_dashboard_creator_review_api_is_token_protected(
+    monitoring_inputs: MonitoringInputs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = {
+        "item": {
+            "did": "did:plc:discovery-test",
+            "handle": "discovery.test",
+            "state": "needs_review",
+            "creator_score": 0.71,
+            "score_components": {"art_relevance": 0.8},
+            "observations": [{"source_type": "starter_pack"}],
+            "media": [],
+        },
+        "offset": 0,
+        "total": 1,
+    }
+    monkeypatch.setattr(
+        HumanReviewService,
+        "discovery_item",
+        lambda self, **kwargs: {**item, "requested": kwargs},
+    )
+    monkeypatch.setattr(
+        HumanReviewService,
+        "submit_discovery_review",
+        lambda self, payload: {"did": payload["did"], "state": "qualified"},
+    )
+    try:
+        server = create_monitoring_server(monitoring_inputs, port=0)
+    except PermissionError:
+        pytest.skip("execution environment blocks loopback sockets")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    token = server.review_token
+    try:
+        queue = _review_get(
+            base,
+            "/api/review/discovery",
+            token,
+            state="needs_review",
+            offset="0",
+        )
+        saved = _review_post(
+            base,
+            "/api/review/discovery-decision",
+            token,
+            {"did": "did:plc:discovery-test", "decision": "approve"},
+        )
+        with pytest.raises(HTTPError) as unauthorized:
+            _review_get(base, "/api/review/discovery", "wrong-token")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert queue["item"]["handle"] == "discovery.test"
+    assert queue["requested"] == {"state": "needs_review", "offset": 0}
+    assert saved == {"did": "did:plc:discovery-test", "state": "qualified"}
+    assert unauthorized.value.code == 403
 
 
 def test_review_service_records_auditable_human_evidence(
@@ -512,6 +586,8 @@ def test_dashboard_review_api_persists_filter_and_retrieval_feedback(
     try:
         summary = _review_get(base, "/api/review/summary", token)
         queue = _review_get(base, "/api/review/filter", token)
+        graph = _review_get(base, "/api/control/graph", token)
+        job = _review_get(base, "/api/control/job", token)
         with urlopen(
             f"{base}/api/review/media/filter?{urlencode({'token': token, 'candidate_id': 'gate-1'})}",
             timeout=2,
@@ -521,6 +597,9 @@ def test_dashboard_review_api_persists_filter_and_retrieval_feedback(
         assert summary["filter"]["pending"] == 1
         assert queue["item"]["candidate_id"] == "gate-1"
         assert queue["item"]["predicted_class"] == "finished_illustration"
+        assert graph["counts"]["corpus_artists"] == 1
+        assert graph["posts"][0][1].startswith("p:")
+        assert job["active"] is False
         assert response.headers["Content-Type"] == "image/jpeg"
         assert media.startswith(b"\xff\xd8")
 
@@ -532,6 +611,15 @@ def test_dashboard_review_api_persists_filter_and_retrieval_feedback(
                 {"candidate_id": "gate-1"},
             )
         assert unauthorized.value.code == 403
+
+        with pytest.raises(HTTPError) as invalid_control:
+            _review_post(
+                base,
+                "/api/control/refresh",
+                token,
+                {"max_new_images": 0},
+            )
+        assert invalid_control.value.code == 400
 
         saved = _review_post(
             base,
@@ -610,11 +698,154 @@ def test_dashboard_html_is_self_contained() -> None:
     assert "Review &amp; feedback" in html
     assert "Live alpha feedback" in html
     assert "Search p95" in html
+    assert "Unique demo IPs" in html
     assert "Pipeline success" in html
     assert "Artwork gate decisions" in html
+    assert 'data-tab="discovery"' in html
+    assert "Corpus discovery control plane" in html
+    assert "Duplicate creator IDs" in html
+    assert "25-account cap" in html
+    assert "Pull missing posts" in html
+    assert "Expand similar accounts" in html
+    assert 'id="corpus-graph"' in html
+    assert "/api/control/refresh" in html
+    assert "/api/control/expand" in html
+    assert "Creator discovery" in html
+    assert "/api/review/discovery-decision" in html
+    assert 'data-operator-action="run-intake"' in html
+    assert 'new CustomEvent("artsearch:operator-action"' in html
     assert "reviewSummary?.conceal_media === false" in html
     assert 'src="http' not in html
     assert 'href="http' not in html
+
+
+def test_corpus_control_builds_compact_graph_and_bounded_refresh_job(
+    monitoring_inputs: MonitoringInputs,
+) -> None:
+    commands: list[list[str]] = []
+
+    def runner(command, cwd, stdout_path, stderr_path):
+        commands.append(list(command))
+        assert cwd == load_config(monitoring_inputs.app_config_path).root_dir
+        stdout_path.write_text('{"candidates":2,"accepted":1}\n', encoding="utf-8")
+        stderr_path.write_text("", encoding="utf-8")
+        return 0
+
+    service = CorpusControlService(
+        app_config_path=monitoring_inputs.app_config_path,
+        filter_config_path=monitoring_inputs.filter_config_path,
+        prompt_config_path=monitoring_inputs.prompt_config_path,
+        production_config_path=monitoring_inputs.production_config_path,
+        command_runner=runner,
+    )
+
+    graph = service.graph()
+    assert graph["counts"]["corpus_artists"] == 1
+    assert graph["counts"]["posts"] == 1
+    assert graph["artists"][0]["key"].startswith("a:")
+    assert graph["posts"][0][1].startswith("p:")
+    assert "at://" not in json.dumps(graph)
+    assert graph["controls"]["can_refresh"] is True
+    assert graph["controls"]["can_expand"] is False
+
+    started = service.start_refresh(
+        {
+            "max_new_images": 7,
+            "max_pages_per_artist": 1,
+            "max_images_per_artist": 3,
+            "artist_limit": 1,
+        }
+    )
+    assert started["job"]["kind"] == "refresh"
+    assert service.wait_for_idle()
+    status = service.status()
+    assert status["job"]["state"] == "succeeded"
+    assert status["job"]["summary"] == {"candidates": 2, "accepted": 1}
+    assert commands
+    command = commands[0]
+    assert "--resume" in command
+    assert command[command.index("--max-candidates") + 1] == "7"
+
+    app = load_config(monitoring_inputs.app_config_path)
+    with connect(app.database_path) as connection:
+        state = connection.execute(
+            "SELECT high_water_post_uri FROM bluesky_actor_intake_state"
+        ).fetchone()
+    assert state["high_water_post_uri"] == "at://did:plc:artist-a/app.bsky.feed.post/test"
+
+
+def test_corpus_control_expansion_uses_trusted_rotating_seeds_and_request_cap(
+    monitoring_inputs: MonitoringInputs,
+) -> None:
+    production_config = monitoring_inputs.production_config_path.with_name(
+        "production-enabled.toml"
+    )
+    production_config.write_text(
+        """
+version = "test-control"
+[postgres]
+enabled = true
+require_tls = false
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    commands: list[list[str]] = []
+
+    def runner(command, cwd, stdout_path, stderr_path):
+        commands.append(list(command))
+        stdout_path.write_text('{"api_requests":9,"budget_reached":1}\n', encoding="utf-8")
+        stderr_path.write_text("", encoding="utf-8")
+        return 0
+
+    service = CorpusControlService(
+        app_config_path=monitoring_inputs.app_config_path,
+        filter_config_path=monitoring_inputs.filter_config_path,
+        prompt_config_path=monitoring_inputs.prompt_config_path,
+        production_config_path=production_config,
+        command_runner=runner,
+    )
+
+    started = service.start_expand({"depth": 2, "request_budget": 9})
+    assert started["job"]["parameters"]["seed_artists"] == 1
+    assert service.wait_for_idle()
+    command = commands[0]
+    assert "--trusted-seeds" in command
+    assert "--manual-seeds-only" in command
+    assert command[command.index("--max-depth") + 1] == "2"
+    assert command[command.index("--request-budget") + 1] == "9"
+
+
+def test_corpus_control_allows_only_one_active_background_job(
+    monitoring_inputs: MonitoringInputs,
+) -> None:
+    entered = Event()
+    release = Event()
+
+    def runner(command, cwd, stdout_path, stderr_path):
+        entered.set()
+        release.wait(timeout=2)
+        stdout_path.write_text('{"candidates":0}\n', encoding="utf-8")
+        stderr_path.write_text("", encoding="utf-8")
+        return 0
+
+    service = CorpusControlService(
+        app_config_path=monitoring_inputs.app_config_path,
+        filter_config_path=monitoring_inputs.filter_config_path,
+        prompt_config_path=monitoring_inputs.prompt_config_path,
+        production_config_path=monitoring_inputs.production_config_path,
+        command_runner=runner,
+    )
+
+    try:
+        service.start_refresh({"artist_limit": 1})
+        assert entered.wait(timeout=1)
+        with pytest.raises(CorpusControlConflictError):
+            service.start_refresh({"artist_limit": 1})
+        assert len(list(service.jobs_root.iterdir())) == 1
+    finally:
+        release.set()
+    assert service.wait_for_idle()
 
 
 def test_freedesktop_launcher_runs_installed_project_command(
@@ -648,6 +879,38 @@ def test_windows_launcher_uses_native_wsl_working_directory(tmp_path: Path) -> N
     assert "bash -lc" not in content
     assert "Starting ArtSearch Model Operations" in content
     assert "could not start" in content
+
+
+def test_dashboard_loads_ignored_environment_without_overwriting_process_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / ".env"
+    path.write_text(
+        "# private\nDATABASE_URL='postgresql://private.example/db'\nQDRANT_URL=https://q.test\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DATABASE_URL", "postgresql://already-set.example/db")
+    monkeypatch.delenv("QDRANT_URL", raising=False)
+
+    _load_private_environment(path)
+
+    assert os.environ["DATABASE_URL"] == "postgresql://already-set.example/db"
+    assert os.environ["QDRANT_URL"] == "https://q.test"
+
+
+def test_dashboard_prefers_private_cloud_config_when_present(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs/production.alpha-cloud.local.toml").write_text(
+        "version = 'test'\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    assert _default_production_config() == "configs/production.alpha-cloud.local.toml"
 
 
 def test_monitoring_config_rejects_inverted_drift_thresholds(tmp_path: Path) -> None:

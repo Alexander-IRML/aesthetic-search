@@ -185,6 +185,30 @@ class ProductMetricsRepository:
                 feedback_rows,
                 top_ten_impressions=impression_count,
             )
+            visitor_row = (
+                connection.execute(
+                    text(
+                        """
+                    SELECT COUNT(DISTINCT client_metadata ->> 'visitor_ip_hash')
+                               AS total_unique_ips,
+                           COUNT(DISTINCT client_metadata ->> 'visitor_ip_hash') FILTER (
+                               WHERE last_seen_at >= now() - interval '24 hours'
+                           ) AS unique_ips_last_24h,
+                           COUNT(DISTINCT client_metadata ->> 'visitor_ip_hash') FILTER (
+                               WHERE last_seen_at >= :window_start
+                           ) AS window_unique_ips,
+                           MAX(last_seen_at) FILTER (
+                               WHERE client_metadata ->> 'visitor_ip_hash' IS NOT NULL
+                           ) AS latest_visit_at
+                      FROM product.sessions
+                     WHERE client_metadata ->> 'visitor_ip_hash' IS NOT NULL
+                    """
+                    ),
+                    {"window_start": window_start},
+                )
+                .mappings()
+                .one()
+            )
             pipeline = _pipeline_snapshot(connection, window_start=window_start)
 
         completed_or_error = int(search_row["window_completed"] or 0) + int(
@@ -211,6 +235,13 @@ class ProductMetricsRepository:
                 "latest_completed_at": _iso(search_row["latest_completed_at"]),
             },
             "feedback": feedback,
+            "visitors": {
+                "total_unique_ips": int(visitor_row["total_unique_ips"] or 0),
+                "unique_ips_last_24h": int(visitor_row["unique_ips_last_24h"] or 0),
+                "window_unique_ips": int(visitor_row["window_unique_ips"] or 0),
+                "latest_visit_at": _iso(visitor_row["latest_visit_at"]),
+                "identifier": "hmac_sha256_ip",
+            },
             "pipeline": pipeline,
         }
 
@@ -238,6 +269,13 @@ def empty_product_metrics(
             "latest_completed_at": None,
         },
         "feedback": calculate_feedback_metrics((), top_ten_impressions=0),
+        "visitors": {
+            "total_unique_ips": 0,
+            "unique_ips_last_24h": 0,
+            "window_unique_ips": 0,
+            "latest_visit_at": None,
+            "identifier": "hmac_sha256_ip",
+        },
         "pipeline": {
             "decisions": 0,
             "decision_errors": 0,

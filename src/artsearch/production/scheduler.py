@@ -40,6 +40,10 @@ class IntakeSchedulerConfig(BaseModel):
     actors_file: Path = Path("config/bluesky_actors.local.txt")
     filter_config: Path = Path("configs/artwork_filter.default.toml")
     production_config: Path = Path("configs/production.default.toml")
+    discovery_enabled: bool = False
+    discovery_config: Path = Path("configs/discovery.default.toml")
+    discovery_creator_budget: int = 200
+    discovery_max_tasks: int = 500
     minimum_free_gb: int = 25
     startup_timeout_seconds: int = 600
     run_timeout_seconds: int = 50_400
@@ -68,6 +72,8 @@ class IntakeSchedulerConfig(BaseModel):
             "latest_start_minutes": self.latest_start_minutes,
             "candidate_target": self.candidate_target,
             "candidates_per_actor": self.candidates_per_actor,
+            "discovery_creator_budget": self.discovery_creator_budget,
+            "discovery_max_tasks": self.discovery_max_tasks,
             "minimum_free_gb": self.minimum_free_gb,
             "startup_timeout_seconds": self.startup_timeout_seconds,
             "run_timeout_seconds": self.run_timeout_seconds,
@@ -136,6 +142,7 @@ def scheduler_status(path: str | Path = DEFAULT_CONFIG) -> dict[str, object]:
     actors_file = _project_path(project_root, config.actors_file)
     filter_config = _project_path(project_root, config.filter_config)
     production_config = _project_path(project_root, config.production_config)
+    discovery_config = _project_path(project_root, config.discovery_config)
     docker_executable = _docker_executable()
     return {
         "status": "configured",
@@ -152,6 +159,9 @@ def scheduler_status(path: str | Path = DEFAULT_CONFIG) -> dict[str, object]:
         "filter_config_exists": filter_config.is_file(),
         "production_config": str(production_config),
         "production_config_exists": production_config.is_file(),
+        "discovery_enabled": config.discovery_enabled,
+        "discovery_config": str(discovery_config),
+        "discovery_config_exists": discovery_config.is_file(),
         "compose_file_exists": compose_file.is_file(),
         "docker_available": docker_executable is not None,
         "docker_executable": docker_executable,
@@ -189,6 +199,7 @@ def run_intake(
     actors_file = _project_path(project_root, config.actors_file)
     filter_config = _project_path(project_root, config.filter_config)
     production_config = _project_path(project_root, config.production_config)
+    discovery_config = _project_path(project_root, config.discovery_config)
     _preflight(
         config,
         project_root,
@@ -196,6 +207,7 @@ def run_intake(
         actors_file,
         filter_config,
         production_config,
+        discovery_config,
     )
     docker_executable = _docker_executable()
     if docker_executable is None:
@@ -255,6 +267,10 @@ def run_intake(
                     "candidate_target": config.candidate_target,
                     "max_candidates_per_actor": config.candidates_per_actor,
                     "production_config": str(config.production_config),
+                    "discovery_enabled": config.discovery_enabled,
+                    "discovery_config": str(config.discovery_config),
+                    "discovery_creator_budget": config.discovery_creator_budget,
+                    "discovery_max_tasks": config.discovery_max_tasks,
                 },
                 separators=(",", ":"),
             )
@@ -288,6 +304,7 @@ def run_intake(
             "candidate_target": config.candidate_target,
             "candidates_per_actor": config.candidates_per_actor,
             "actor_count": _actor_count(actors_file),
+            "discovery_enabled": config.discovery_enabled,
             "config_hash": config.config_hash,
         }
         _record_scheduler_event(project_root, current, report)
@@ -360,6 +377,7 @@ def _preflight(
     actors_file: Path,
     filter_config: Path,
     production_config: Path,
+    discovery_config: Path,
 ) -> None:
     if _docker_executable() is None:
         raise RuntimeError("Docker Desktop or a native docker CLI is not available in WSL")
@@ -371,6 +389,8 @@ def _preflight(
         raise FileNotFoundError(f"artwork-filter config is missing: {filter_config}")
     if not production_config.is_file():
         raise FileNotFoundError(f"production config is missing: {production_config}")
+    if config.discovery_enabled and not discovery_config.is_file():
+        raise FileNotFoundError(f"discovery config is missing: {discovery_config}")
     free_gb = shutil.disk_usage(project_root).free / (1024**3)
     if free_gb < config.minimum_free_gb:
         raise RuntimeError(

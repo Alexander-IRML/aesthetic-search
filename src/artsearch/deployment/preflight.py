@@ -212,6 +212,20 @@ def run_deployment_preflight(
             phase=phase,
         )
     )
+    visitor_secret = environment.get("ARTSEARCH_VISITOR_HASH_SECRET", "")
+    checks.append(
+        _boolean_check(
+            "api.visitor_hash_secret",
+            len(visitor_secret.encode("utf-8")) >= 32,
+            success="Visitor hash secret is at least 32 bytes.",
+            failure=(
+                "Set ARTSEARCH_VISITOR_HASH_SECRET to a stable generated value of at "
+                "least 32 bytes."
+            ),
+            required_for=("api", "full"),
+            phase=phase,
+        )
+    )
 
     suffix_status: CheckStatus = "pass" if path.name.endswith(".local.toml") else "warn"
     checks.append(

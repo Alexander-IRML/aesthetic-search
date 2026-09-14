@@ -29,6 +29,7 @@ const backendState = document.querySelector("#backend-state");
 const backendStateLabel = document.querySelector("#backend-state-label");
 const latencyPanel = document.querySelector("#latency-panel");
 const requestStartState = document.querySelector("#request-start-state");
+const retrievalWeightInputs = [...document.querySelectorAll(".weight-control input")];
 const timingValues = new Map(
   [...document.querySelectorAll("[data-timing]")].map((element) => [
     element.dataset.timing,
@@ -104,6 +105,27 @@ async function refreshRuntimeStatus() {
   } catch {
     setBackendState("unknown", "Container state could not be verified.");
   }
+}
+
+async function registerSiteVisit() {
+  try {
+    const response = await fetch("/api/site-visit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_key: browserSessionKey() }),
+      keepalive: true,
+    });
+    if (response.ok) {
+      await refreshRuntimeStatus();
+    }
+  } catch {
+    // Visitor telemetry is best effort and must never block the search UI.
+  }
+}
+
+function syncRetrievalWeight(input) {
+  const output = document.querySelector(`#${input.id}-value`);
+  if (output) output.textContent = `${Number(input.value).toFixed(2)}x`;
 }
 
 function selectFile(file) {
@@ -237,7 +259,11 @@ function renderResults(payload, trace) {
   resultCount.textContent = `${String(payload.result_count).padStart(2, "0")} / 10`;
   statusMessage.textContent = payload.results.length ? "COMPLETE" : "NO RESULTS";
   queryId.textContent = `QUERY ${payload.query_id.slice(0, 8).toUpperCase()}`;
-  indexVersion.textContent = `INDEX ${payload.model.index_alias.toUpperCase()}`;
+  const indexLabel = payload.model.index_version || payload.model.index_alias;
+  const backendLabel = payload.model.vector_backend
+    ? `${payload.model.vector_backend.toUpperCase()} `
+    : "";
+  indexVersion.textContent = `INDEX ${backendLabel}${indexLabel.toUpperCase()}`;
   latency.textContent = `${Math.round(trace.browserTotalMs)} MS`;
   renderLatencyTrace(payload.timing, trace);
 }
@@ -427,6 +453,7 @@ async function runSearch({
   const body = new FormData();
   body.append("image", selectedFile, selectedFile.name);
   body.append("session_key", browserSessionKey());
+  retrievalWeightInputs.forEach((weight) => body.append(weight.name, weight.value));
   if (artistId) body.append("artist_id", artistId);
   const controller = new AbortController();
   activeSearchController = controller;
@@ -538,6 +565,10 @@ function formatBytes(value) {
 
 input.addEventListener("change", () => selectFile(input.files[0]));
 clearButton.addEventListener("click", resetFile);
+retrievalWeightInputs.forEach((weight) => {
+  syncRetrievalWeight(weight);
+  weight.addEventListener("input", () => syncRetrievalWeight(weight));
+});
 
 ["dragenter", "dragover"].forEach((eventName) => {
   dropZone.addEventListener(eventName, (event) => {
@@ -576,3 +607,4 @@ assistantForm.addEventListener("submit", (event) => {
 });
 
 void refreshRuntimeStatus();
+void registerSiteVisit();

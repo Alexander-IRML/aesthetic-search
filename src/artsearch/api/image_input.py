@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Protocol
@@ -60,6 +61,21 @@ async def read_validated_image(
         raise InvalidUploadError("The uploaded image is empty.")
 
     data = b"".join(chunks)
+    return await asyncio.to_thread(
+        _decode_image,
+        data,
+        declared_mime,
+        config,
+    )
+
+
+def _decode_image(
+    data: bytes,
+    declared_mime: str,
+    config: SearchApiConfig,
+) -> ValidatedImage:
+    """Decode untrusted pixels away from the serving event loop."""
+
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
@@ -96,6 +112,6 @@ async def read_validated_image(
         image=rgb,
         width=rgb.width,
         height=rgb.height,
-        byte_size=total,
+        byte_size=len(data),
         mime_type=actual_mime,
     )

@@ -67,6 +67,10 @@ with DAG(
         "prompt_config": Param("configs/artwork_filter.prompts.v1.toml", type="string"),
         "app_config": Param("config/config.yaml", type="string"),
         "production_config": Param(PRODUCTION_CONFIG, type="string"),
+        "discovery_enabled": Param(False, type="boolean"),
+        "discovery_config": Param("configs/discovery.default.toml", type="string"),
+        "discovery_creator_budget": Param(200, type="integer", minimum=1, maximum=10000),
+        "discovery_max_tasks": Param(500, type="integer", minimum=1, maximum=100000),
         "run_root": Param("data/production/runs", type="string"),
         "max_pages": Param(1, type="integer", minimum=1, maximum=100),
         "page_limit": Param(100, type="integer", minimum=1, maximum=100),
@@ -102,38 +106,71 @@ with DAG(
     @task(execution_timeout=timedelta(hours=12))
     def collect_and_filter(run: dict[str, str]) -> dict[str, object]:
         params = get_current_context()["params"]
-        command = [
-            "artsearch-bluesky-pipeline",
-            "run-authors",
-            "--actors-file",
-            str(_project_path(str(params["actors_file"]))),
-            "--bluesky-config",
-            str(_project_path(str(params["bluesky_config"]))),
-            "--filter-config",
-            str(_project_path(str(params["filter_config"]))),
-            "--prompt-config",
-            str(_project_path(str(params["prompt_config"]))),
-            "--app-config",
-            str(_project_path(str(params["app_config"]))),
-            "--candidates-output",
-            run["candidates"],
-            "--decisions-output",
-            run["decisions"],
-            "--checkpoint",
-            run["checkpoints"],
-            "--overwrite-decisions",
-            "--no-review-download",
-            "--max-pages",
-            str(params["max_pages"]),
-            "--limit",
-            str(params["page_limit"]),
-            "--feed-filter",
-            str(params["feed_filter"]),
-            "--max-candidates",
-            str(params["candidate_target"]),
-            "--max-candidates-per-actor",
-            str(params["max_candidates_per_actor"]),
-        ]
+        if bool(params["discovery_enabled"]):
+            command = [
+                "artsearch-discovery",
+                "run",
+                "--actors-file",
+                str(_project_path(str(params["actors_file"]))),
+                "--discovery-config",
+                str(_project_path(str(params["discovery_config"]))),
+                "--bluesky-config",
+                str(_project_path(str(params["bluesky_config"]))),
+                "--filter-config",
+                str(_project_path(str(params["filter_config"]))),
+                "--prompt-config",
+                str(_project_path(str(params["prompt_config"]))),
+                "--app-config",
+                str(_project_path(str(params["app_config"]))),
+                "--production-config",
+                str(_project_path(str(params["production_config"]))),
+                "--campaign-name",
+                str(run["run_id"]),
+                "--candidates-output",
+                run["candidates"],
+                "--decisions-output",
+                run["decisions"],
+                "--creator-budget",
+                str(params["discovery_creator_budget"]),
+                "--media-budget",
+                str(params["candidate_target"]),
+                "--max-tasks",
+                str(params["discovery_max_tasks"]),
+                "--overwrite-output",
+            ]
+        else:
+            command = [
+                "artsearch-bluesky-pipeline",
+                "run-authors",
+                "--actors-file",
+                str(_project_path(str(params["actors_file"]))),
+                "--bluesky-config",
+                str(_project_path(str(params["bluesky_config"]))),
+                "--filter-config",
+                str(_project_path(str(params["filter_config"]))),
+                "--prompt-config",
+                str(_project_path(str(params["prompt_config"]))),
+                "--app-config",
+                str(_project_path(str(params["app_config"]))),
+                "--candidates-output",
+                run["candidates"],
+                "--decisions-output",
+                run["decisions"],
+                "--checkpoint",
+                run["checkpoints"],
+                "--overwrite-decisions",
+                "--no-review-download",
+                "--max-pages",
+                str(params["max_pages"]),
+                "--limit",
+                str(params["page_limit"]),
+                "--feed-filter",
+                str(params["feed_filter"]),
+                "--max-candidates",
+                str(params["candidate_target"]),
+                "--max-candidates-per-actor",
+                str(params["max_candidates_per_actor"]),
+            ]
         if bool(params["deterministic_only"]):
             command.append("--deterministic-only")
 
@@ -149,8 +186,17 @@ with DAG(
         summary = _last_json_object(completed.stdout)
         if completed.returncode != 0:
             candidate_count = int(summary.get("candidates", 0)) if summary else 0
-            actor_count = int(summary.get("actors_started", 0)) if summary else 0
-            actor_errors = int(summary.get("actor_errors", 0)) if summary else 0
+            discovery_run = bool(params["discovery_enabled"])
+            actor_count = (
+                int(summary.get("unique_creators", 0))
+                if discovery_run and summary
+                else int(summary.get("actors_started", 0)) if summary else 0
+            )
+            actor_errors = (
+                int(summary.get("source_errors", 0))
+                if discovery_run and summary
+                else int(summary.get("actor_errors", 0)) if summary else 0
+            )
             item_errors = (
                 int(summary.get("classification_errors", 0)) + int(summary.get("route_errors", 0))
                 if summary
@@ -186,22 +232,35 @@ with DAG(
         return {**run, "object_store_canary": result.to_dict()}
 
     @task(execution_timeout=timedelta(hours=4))
-    def publish_originals(run: dict[str, object]) -> dict[str, object]:
+    def publish_corpus_rendition(run: dict[str, object]) -> dict[str, object]:
         from artsearch.ingest.config import load_config
         from artsearch.production.config import load_production_config
         from artsearch.production.object_store import build_object_store
         from artsearch.production.publisher import (
+            CorpusPublishResult,
             candidate_ids_from_jsonl,
-            publish_corpus_originals,
+            publish_corpus_images,
         )
 
         params = get_current_context()["params"]
         production = load_production_config(_project_path(str(params["production_config"])))
         app = load_config(_project_path(str(params["app_config"])))
-        corpus = publish_corpus_originals(
+        if not production.object_store.publish_corpus_renditions:
+            skipped = CorpusPublishResult(
+                source=production.object_store.corpus_source,
+                role=production.object_store.corpus_role,
+            ).to_dict()
+            return {
+                **run,
+                "corpus_publish": {"enabled": False, "skipped": True, **skipped},
+            }
+        corpus = publish_corpus_images(
             app.database_path,
             app.root_dir,
             build_object_store(production.object_store),
+            source=production.object_store.corpus_source,
+            role=production.object_store.corpus_role,
+            namespace=production.object_store.corpus_namespace,
             candidate_ids=candidate_ids_from_jsonl(
                 str(run["decisions"]),
                 required_decision="accept",
@@ -213,7 +272,7 @@ with DAG(
         )
         if corpus.failed or corpus.missing:
             raise RuntimeError(
-                "accepted-original publication was incomplete: "
+                "accepted corpus-rendition publication was incomplete: "
                 f"failed={corpus.failed}, missing={corpus.missing}; "
                 f"samples={list(corpus.errors[:5])}"
             )
@@ -239,7 +298,7 @@ with DAG(
             candidate_ids_from_jsonl,
             publish_sqlite_snapshot,
         )
-        from artsearch.postgres.model_lineage import model_bundle_record
+        from artsearch.postgres.model_lineage import configured_model_bundle_record
         from artsearch.production.config import load_production_config
 
         params = get_current_context()["params"]
@@ -256,7 +315,10 @@ with DAG(
                 qdrant_collection_name=(
                     production.qdrant.collection_name if production.qdrant.enabled else None
                 ),
-                model_bundle=model_bundle_record(app.models, production.qdrant),
+                model_bundle=configured_model_bundle_record(app.models, production),
+                include_embeddings=production.postgres.publish_embeddings,
+                include_filter_history=production.postgres.publish_filter_history,
+                include_run_history=production.postgres.publish_run_history,
             )
         finally:
             engine.dispose()
@@ -386,17 +448,68 @@ with DAG(
         )
         return {
             "run_id": run["run_id"],
+            "run_dir": run["run_dir"],
+            "decisions": run["decisions"],
             "bundle_uri": bundle_ref.uri,
             "manifest_uri": artifact_refs["manifest"]["uri"],
+            "metadata_published": bool(run["postgres_summary"].get("verified", False)),
             "accepted_published": run["corpus_publish"]["published"],
             "accepted_unchanged": run["corpus_publish"]["unchanged"],
             "qdrant_points": run["qdrant_summary"].get("remote_count", 0),
         }
 
+    @task(execution_timeout=timedelta(hours=1))
+    def prune_local_images(run: dict[str, object]) -> dict[str, object]:
+        from artsearch.ingest.config import load_config
+        from artsearch.production.config import load_production_config
+        from artsearch.production.object_store import (
+            build_object_store,
+            content_addressed_key,
+            file_identity,
+        )
+        from artsearch.production.publisher import candidate_ids_from_jsonl
+        from artsearch.production.retention import apply_local_image_retention
+
+        params = get_current_context()["params"]
+        production = load_production_config(_project_path(str(params["production_config"])))
+        if not production.local_retention.enabled:
+            return {**run, "local_retention": {"enabled": False, "skipped": True}}
+        if production.postgres.enabled and not bool(run["metadata_published"]):
+            raise RuntimeError("local retention requires a verified metadata publication")
+        app = load_config(_project_path(str(params["app_config"])))
+        result = apply_local_image_retention(
+            app.database_path,
+            app,
+            production.local_retention,
+            candidate_ids=candidate_ids_from_jsonl(
+                str(run["decisions"]),
+                required_decision="accept",
+            ),
+            apply=True,
+        )
+        if result.errors:
+            raise RuntimeError(f"local image retention failed: {list(result.errors[:5])}")
+        report_path = Path(str(run["run_dir"])) / "local-retention.json"
+        report_path.write_text(
+            json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        digest, _ = file_identity(report_path)
+        report_ref = build_object_store(production.object_store).put_file(
+            report_path,
+            content_addressed_key("runs/retention", digest, suffix=".json"),
+            expected_sha256=digest,
+        )
+        return {
+            **run,
+            "local_retention": result.to_dict(),
+            "local_retention_report_uri": report_ref.uri,
+        }
+
     storage_ready = validate_object_store(prepare_run())
     collected = collect_and_filter(storage_ready)
-    published = publish_originals(collected)
+    published = publish_corpus_rendition(collected)
     embedded = generate_retrieval_embeddings(published)
     canonical = publish_postgres(embedded)
     indexed = sync_qdrant_index(canonical)
-    publish_run(build_data_products(indexed))
+    prune_local_images(publish_run(build_data_products(indexed)))

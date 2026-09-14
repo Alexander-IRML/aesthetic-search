@@ -3,7 +3,12 @@ import asyncio
 import httpx
 import pytest
 
-from artsearch.bluesky.client import BlueskyAPIError, BlueskyClient
+from artsearch.bluesky.client import (
+    BlueskyAPIError,
+    BlueskyClient,
+    BlueskyRequestBudget,
+    BlueskyRequestBudgetExceeded,
+)
 from artsearch.bluesky.config import BlueskyConfig
 
 
@@ -114,3 +119,37 @@ def test_client_wraps_invalid_success_payload_as_typed_error():
 
     with pytest.raises(BlueskyAPIError, match="returned invalid JSON"):
         asyncio.run(run())
+
+
+def test_request_budget_counts_retries_and_stops_before_extra_http_attempt() -> None:
+    requests = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(503, request=request)
+
+    async def run() -> BlueskyRequestBudget:
+        config = BlueskyConfig.model_validate(
+            {
+                "api": {
+                    "base_url": "https://example.test",
+                    "max_retries": 3,
+                    "retry_backoff_seconds": 0,
+                }
+            }
+        )
+        budget = BlueskyRequestBudget(2)
+        async with BlueskyClient(
+            config,
+            transport=httpx.MockTransport(handler),
+            request_budget=budget,
+        ) as client:
+            with pytest.raises(BlueskyRequestBudgetExceeded):
+                await client.get_author_feed("did:plc:artist")
+        return budget
+
+    budget = asyncio.run(run())
+
+    assert len(requests) == 2
+    assert budget.used == 2
+    assert budget.remaining == 0

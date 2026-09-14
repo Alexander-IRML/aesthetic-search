@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from artsearch.production.config import PostgresConfig
 
@@ -91,6 +92,46 @@ def build_engine(
         def _set_local_statement_timeout(connection: Connection) -> None:
             # Neon uses transaction-mode PgBouncer and rejects this as a
             # startup option. SET LOCAL keeps the limit scoped to one checkout.
+            connection.exec_driver_sql(
+                f"SET LOCAL statement_timeout = {timeout_ms}",
+                execution_options={"stream_results": False},
+            )
+
+    return engine
+
+
+def build_async_engine(
+    config: PostgresConfig,
+    *,
+    direct: bool = False,
+    environ: Mapping[str, str] | None = None,
+    echo: bool = False,
+) -> AsyncEngine:
+    """Build a bounded async engine for latency-sensitive serving I/O."""
+
+    url = resolve_database_url(config, direct=direct, environ=environ)
+    connect_args = {"application_name": config.application_name}
+    if direct:
+        connect_args["options"] = f"-c statement_timeout={config.statement_timeout_ms}"
+    common: dict[str, object] = {
+        "pool_pre_ping": True,
+        "connect_args": connect_args,
+        "echo": echo,
+    }
+    if direct:
+        common.update(pool_size=1, max_overflow=0, pool_timeout=config.pool_timeout_seconds)
+    else:
+        common.update(
+            pool_size=config.pool_size,
+            max_overflow=config.max_overflow,
+            pool_timeout=config.pool_timeout_seconds,
+        )
+    engine = create_async_engine(url, **common)
+    if not direct:
+        timeout_ms = config.statement_timeout_ms
+
+        @event.listens_for(engine.sync_engine, "begin")
+        def _set_local_statement_timeout(connection: Connection) -> None:
             connection.exec_driver_sql(
                 f"SET LOCAL statement_timeout = {timeout_ms}",
                 execution_options={"stream_results": False},

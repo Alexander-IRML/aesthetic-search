@@ -25,7 +25,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 
 
-SCHEMAS = ("catalog", "ml", "ingest", "product")
+SCHEMAS = ("catalog", "ml", "ingest", "discovery", "product")
 
 metadata = MetaData(
     naming_convention={
@@ -436,6 +436,497 @@ Index(
     outbox_events.c.available_at,
     outbox_events.c.created_at,
 )
+
+
+discovery_campaigns = Table(
+    "campaigns",
+    metadata,
+    Column("campaign_id", UUID(as_uuid=True), primary_key=True),
+    Column("name", Text, nullable=False),
+    Column("state", Text, nullable=False, server_default=text("'active'")),
+    Column("config_version", Text, nullable=False),
+    Column("config_hash", Text, nullable=False),
+    Column("budgets", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("metrics", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("started_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("finished_at", DateTime(timezone=True)),
+    CheckConstraint(
+        "state IN ('active', 'completed', 'failed', 'cancelled')",
+        name="discovery_campaigns_state",
+    ),
+    schema="discovery",
+)
+Index("ix_discovery_campaigns_started", discovery_campaigns.c.started_at)
+
+
+discovery_entities = Table(
+    "graph_entities",
+    metadata,
+    Column("entity_id", Text, primary_key=True),
+    Column("entity_type", Text, nullable=False),
+    Column("canonical_ref", Text, nullable=False),
+    Column("first_seen_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("last_seen_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("minimum_depth", Integer, nullable=False, server_default=text("0")),
+    Column("discovery_score", Float),
+    Column("expansion_score", Float),
+    Column("expansion_state", Text, nullable=False, server_default=text("'available'")),
+    Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    UniqueConstraint("entity_type", "canonical_ref", name="uq_discovery_entity_ref"),
+    CheckConstraint(
+        "entity_type IN ('creator', 'post', 'media', 'starter_pack', 'list', "
+        "'feed', 'query', 'source')",
+        name="discovery_entities_type",
+    ),
+    CheckConstraint(
+        "expansion_state IN ('available', 'queued', 'leased', 'complete', 'deferred', "
+        "'rejected', 'blocked', 'deleted')",
+        name="discovery_entities_expansion_state",
+    ),
+    schema="discovery",
+)
+Index(
+    "ix_discovery_entities_expansion",
+    discovery_entities.c.expansion_state,
+    discovery_entities.c.expansion_score,
+)
+
+
+discovery_creators = Table(
+    "creator_candidates",
+    metadata,
+    Column("did", Text, primary_key=True),
+    Column("handle", Text),
+    Column("display_name", Text),
+    Column("description", Text),
+    Column("avatar_url", Text),
+    Column("followers_count", Integer),
+    Column("follows_count", Integer),
+    Column("posts_count", Integer),
+    Column("labels", ARRAY(Text), nullable=False, server_default=text("'{}'::text[]")),
+    Column("state", Text, nullable=False, server_default=text("'discovered'")),
+    Column("safety_state", Text, nullable=False, server_default=text("'unknown'")),
+    Column("minimum_depth", Integer, nullable=False, server_default=text("0")),
+    Column("discovery_count", Integer, nullable=False, server_default=text("0")),
+    Column("creator_score", Float),
+    Column("expansion_score", Float),
+    Column("score_version", Text),
+    Column("score_components", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("profile_metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("first_seen_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("last_seen_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("profile_fetched_at", DateTime(timezone=True)),
+    Column("media_sampled_at", DateTime(timezone=True)),
+    Column("reviewed_at", DateTime(timezone=True)),
+    Column("reviewed_by", Text),
+    Column("review_note", Text),
+    CheckConstraint(
+        "state IN ('discovered', 'hydrated', 'sampled', 'needs_review', 'qualified', "
+        "'deferred', 'rejected', 'blocked', 'deleted')",
+        name="discovery_creators_state",
+    ),
+    CheckConstraint(
+        "safety_state IN ('unknown', 'allowed', 'review', 'blocked')",
+        name="discovery_creators_safety_state",
+    ),
+    schema="discovery",
+)
+Index("ix_discovery_creators_state", discovery_creators.c.state, discovery_creators.c.creator_score)
+Index("ix_discovery_creators_handle", discovery_creators.c.handle)
+
+
+discovery_sources = Table(
+    "sources",
+    metadata,
+    Column("source_id", UUID(as_uuid=True), primary_key=True),
+    Column(
+        "campaign_id",
+        UUID(as_uuid=True),
+        ForeignKey("discovery.campaigns.campaign_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("source_type", Text, nullable=False),
+    Column("source_ref", Text, nullable=False),
+    Column("query", Text),
+    Column("priority", Float, nullable=False, server_default=text("0.5")),
+    Column("state", Text, nullable=False, server_default=text("'active'")),
+    Column("cursor", Text),
+    Column("metrics", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("first_seen_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("last_seen_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    UniqueConstraint(
+        "campaign_id", "source_type", "source_ref", name="uq_discovery_source_ref"
+    ),
+    CheckConstraint(
+        "state IN ('active', 'disabled', 'exhausted', 'error')",
+        name="discovery_sources_state",
+    ),
+    schema="discovery",
+)
+Index("ix_discovery_sources_campaign", discovery_sources.c.campaign_id, discovery_sources.c.state)
+
+
+discovery_observations = Table(
+    "observations",
+    metadata,
+    Column("observation_id", UUID(as_uuid=True), primary_key=True),
+    Column(
+        "campaign_id",
+        UUID(as_uuid=True),
+        ForeignKey("discovery.campaigns.campaign_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "source_id",
+        UUID(as_uuid=True),
+        ForeignKey("discovery.sources.source_id", ondelete="SET NULL"),
+    ),
+    Column(
+        "candidate_did",
+        Text,
+        ForeignKey("discovery.creator_candidates.did", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("source_type", Text, nullable=False),
+    Column("source_ref", Text, nullable=False),
+    Column("graph_parent_id", Text),
+    Column("graph_edge_type", Text),
+    Column("query", Text),
+    Column("crawl_depth", Integer, nullable=False, server_default=text("0")),
+    Column("confidence", Float, nullable=False, server_default=text("0.5")),
+    Column("run_id", Text, nullable=False),
+    Column("idempotency_key", Text, nullable=False, unique=True),
+    Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("observed_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    schema="discovery",
+)
+Index(
+    "ix_discovery_observations_candidate",
+    discovery_observations.c.candidate_did,
+    discovery_observations.c.observed_at,
+)
+Index(
+    "ix_discovery_observations_source",
+    discovery_observations.c.source_type,
+    discovery_observations.c.observed_at,
+)
+
+
+discovery_edges = Table(
+    "graph_edges",
+    metadata,
+    Column("edge_id", UUID(as_uuid=True), primary_key=True),
+    Column(
+        "source_entity_id",
+        Text,
+        ForeignKey("discovery.graph_entities.entity_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "target_entity_id",
+        Text,
+        ForeignKey("discovery.graph_entities.entity_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("edge_type", Text, nullable=False),
+    Column("confidence", Float, nullable=False, server_default=text("0.5")),
+    Column("support_count", Integer, nullable=False, server_default=text("0")),
+    Column("first_seen_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("last_seen_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    UniqueConstraint(
+        "source_entity_id", "target_entity_id", "edge_type", name="uq_discovery_graph_edge"
+    ),
+    CheckConstraint("source_entity_id <> target_entity_id", name="discovery_edges_not_self"),
+    schema="discovery",
+)
+Index("ix_discovery_edges_target", discovery_edges.c.target_entity_id, discovery_edges.c.edge_type)
+
+
+discovery_edge_evidence = Table(
+    "graph_edge_evidence",
+    metadata,
+    Column("edge_evidence_id", UUID(as_uuid=True), primary_key=True),
+    Column(
+        "edge_id",
+        UUID(as_uuid=True),
+        ForeignKey("discovery.graph_edges.edge_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "observation_id",
+        UUID(as_uuid=True),
+        ForeignKey("discovery.observations.observation_id", ondelete="SET NULL"),
+    ),
+    Column("provenance_source", Text, nullable=False),
+    Column("confidence", Float, nullable=False),
+    Column("evidence_key", Text, nullable=False, unique=True),
+    Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("observed_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    schema="discovery",
+)
+Index("ix_discovery_edge_evidence_edge", discovery_edge_evidence.c.edge_id)
+
+
+discovery_posts = Table(
+    "posts",
+    metadata,
+    Column("uri", Text, primary_key=True),
+    Column("cid", Text, nullable=False),
+    Column(
+        "author_did",
+        Text,
+        ForeignKey("discovery.creator_candidates.did", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("created_at", DateTime(timezone=True)),
+    Column("text", Text),
+    Column("labels", ARRAY(Text), nullable=False, server_default=text("'{}'::text[]")),
+    Column("is_repost", Boolean, nullable=False, server_default=text("false")),
+    Column("is_quote_post", Boolean, nullable=False, server_default=text("false")),
+    Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("last_hydrated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("deleted_at", DateTime(timezone=True)),
+    schema="discovery",
+)
+Index("ix_discovery_posts_author", discovery_posts.c.author_did, discovery_posts.c.created_at)
+
+
+discovery_media = Table(
+    "media",
+    metadata,
+    Column("media_id", Text, primary_key=True),
+    Column(
+        "post_uri",
+        Text,
+        ForeignKey("discovery.posts.uri", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("blob_cid", Text),
+    Column("media_index", Integer, nullable=False),
+    Column("candidate_id", Text, nullable=False),
+    Column("thumbnail_url", Text),
+    Column("fullsize_url", Text),
+    Column("width", Integer),
+    Column("height", Integer),
+    Column("state", Text, nullable=False, server_default=text("'observed'")),
+    Column("content_sha256", Text),
+    Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("first_seen_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("last_seen_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("deleted_at", DateTime(timezone=True)),
+    UniqueConstraint("post_uri", "media_index", name="uq_discovery_media_post_index"),
+    CheckConstraint(
+        "state IN ('observed', 'filtered', 'accepted', 'review', 'rejected', "
+        "'indexed', 'deleted', 'error')",
+        name="discovery_media_state",
+    ),
+    schema="discovery",
+)
+Index("ix_discovery_media_candidate", discovery_media.c.candidate_id)
+Index("ix_discovery_media_blob", discovery_media.c.blob_cid)
+
+
+discovery_evidence = Table(
+    "classification_evidence",
+    metadata,
+    Column("evidence_id", UUID(as_uuid=True), primary_key=True),
+    Column("entity_type", Text, nullable=False),
+    Column("entity_id", Text, nullable=False),
+    Column("namespace", Text, nullable=False),
+    Column("label", Text, nullable=False),
+    Column("score", Float, nullable=False),
+    Column("confidence", Float),
+    Column("score_kind", Text, nullable=False),
+    Column("model_name", Text, nullable=False),
+    Column("model_version", Text, nullable=False),
+    Column("calibration_version", Text),
+    Column("config_hash", Text, nullable=False),
+    Column("evidence_key", Text, nullable=False, unique=True),
+    Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    schema="discovery",
+)
+Index(
+    "ix_discovery_evidence_entity",
+    discovery_evidence.c.entity_type,
+    discovery_evidence.c.entity_id,
+    discovery_evidence.c.namespace,
+)
+
+
+discovery_creator_profiles = Table(
+    "creator_profiles",
+    metadata,
+    Column(
+        "did",
+        Text,
+        ForeignKey("discovery.creator_candidates.did", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("score_version", Text, nullable=False),
+    Column("creator_score", Float, nullable=False),
+    Column("expansion_score", Float, nullable=False),
+    Column("sampled_media", Integer, nullable=False),
+    Column("accepted_media", Integer, nullable=False),
+    Column("review_media", Integer, nullable=False),
+    Column("rejected_media", Integer, nullable=False),
+    Column("error_media", Integer, nullable=False),
+    Column("score_components", JSONB, nullable=False),
+    Column("profile", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    schema="discovery",
+)
+Index("ix_discovery_profiles_score", discovery_creator_profiles.c.creator_score)
+
+
+discovery_frontier_tasks = Table(
+    "frontier_tasks",
+    metadata,
+    Column("task_id", UUID(as_uuid=True), primary_key=True),
+    Column(
+        "campaign_id",
+        UUID(as_uuid=True),
+        ForeignKey("discovery.campaigns.campaign_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column(
+        "entity_id",
+        Text,
+        ForeignKey("discovery.graph_entities.entity_id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("action", Text, nullable=False),
+    Column("status", Text, nullable=False, server_default=text("'pending'")),
+    Column("depth", Integer, nullable=False),
+    Column("priority", Float, nullable=False),
+    Column("budget_class", Text, nullable=False),
+    Column("attempts", Integer, nullable=False, server_default=text("0")),
+    Column("max_attempts", Integer, nullable=False, server_default=text("3")),
+    Column("run_after", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("locked_at", DateTime(timezone=True)),
+    Column("locked_until", DateTime(timezone=True)),
+    Column("locked_by", Text),
+    Column("parent_task_id", UUID(as_uuid=True), ForeignKey("discovery.frontier_tasks.task_id")),
+    Column("idempotency_key", Text, nullable=False, unique=True),
+    Column("payload", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("last_error", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("completed_at", DateTime(timezone=True)),
+    CheckConstraint(
+        "status IN ('pending', 'leased', 'retry', 'completed', 'dead', 'cancelled')",
+        name="discovery_frontier_status",
+    ),
+    schema="discovery",
+)
+Index(
+    "ix_discovery_frontier_claim",
+    discovery_frontier_tasks.c.status,
+    discovery_frontier_tasks.c.run_after,
+    discovery_frontier_tasks.c.priority,
+)
+
+
+discovery_pipeline_events = Table(
+    "pipeline_events",
+    metadata,
+    Column("event_id", UUID(as_uuid=True), primary_key=True),
+    Column("campaign_id", UUID(as_uuid=True), ForeignKey("discovery.campaigns.campaign_id")),
+    Column("entity_type", Text, nullable=False),
+    Column("entity_id", Text, nullable=False),
+    Column("from_state", Text),
+    Column("to_state", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("run_id", Text, nullable=False),
+    Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    schema="discovery",
+)
+Index(
+    "ix_discovery_pipeline_events_entity",
+    discovery_pipeline_events.c.entity_type,
+    discovery_pipeline_events.c.entity_id,
+    discovery_pipeline_events.c.created_at,
+)
+
+
+discovery_exclusions = Table(
+    "exclusions",
+    metadata,
+    Column("exclusion_id", UUID(as_uuid=True), primary_key=True),
+    Column("subject_type", Text, nullable=False),
+    Column("subject_key", Text, nullable=False),
+    Column("scope", Text, nullable=False, server_default=text("'all'")),
+    Column("reason_code", Text, nullable=False),
+    Column("reason", Text),
+    Column("source", Text, nullable=False),
+    Column("active", Boolean, nullable=False, server_default=text("true")),
+    Column("created_by", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("expires_at", DateTime(timezone=True)),
+    UniqueConstraint("subject_type", "subject_key", "scope", name="uq_discovery_exclusion"),
+    CheckConstraint(
+        "subject_type IN ('creator', 'post', 'media', 'blob_hash', 'source')",
+        name="discovery_exclusions_subject_type",
+    ),
+    CheckConstraint(
+        "scope IN ('discovery', 'index', 'publication', 'all')",
+        name="discovery_exclusions_scope",
+    ),
+    schema="discovery",
+)
+Index(
+    "ix_discovery_exclusions_lookup",
+    discovery_exclusions.c.subject_type,
+    discovery_exclusions.c.subject_key,
+    discovery_exclusions.c.active,
+)
+
+
+discovery_removal_requests = Table(
+    "removal_requests",
+    metadata,
+    Column("request_id", UUID(as_uuid=True), primary_key=True),
+    Column("subject_type", Text, nullable=False),
+    Column("subject_key", Text, nullable=False),
+    Column("request_type", Text, nullable=False),
+    Column("status", Text, nullable=False, server_default=text("'open'")),
+    Column("requester_reference", Text),
+    Column("reason", Text),
+    Column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("resolved_at", DateTime(timezone=True)),
+    Column("resolved_by", Text),
+    CheckConstraint(
+        "request_type IN ('artist_opt_out', 'source_deletion', 'report', 'operator_block')",
+        name="discovery_removals_type",
+    ),
+    CheckConstraint(
+        "status IN ('open', 'approved', 'rejected', 'executed')",
+        name="discovery_removals_status",
+    ),
+    schema="discovery",
+)
+Index(
+    "ix_discovery_removals_open",
+    discovery_removal_requests.c.status,
+    discovery_removal_requests.c.created_at,
+)
+
+
+discovery_coverage_snapshots = Table(
+    "coverage_snapshots",
+    metadata,
+    Column("snapshot_id", UUID(as_uuid=True), primary_key=True),
+    Column("campaign_id", UUID(as_uuid=True), ForeignKey("discovery.campaigns.campaign_id")),
+    Column("model_bundle_version", Text),
+    Column("dimensions", JSONB, nullable=False),
+    Column("visual_clusters", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("corpus_size", Integer, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    schema="discovery",
+)
+Index("ix_discovery_coverage_created", discovery_coverage_snapshots.c.created_at)
 
 
 users = Table(

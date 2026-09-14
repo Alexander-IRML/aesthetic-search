@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 import hashlib
 from pathlib import Path
 import sqlite3
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -21,6 +23,7 @@ from artsearch.ingest.config import (
 from artsearch.ingest.db import connect, init_db
 from artsearch.production.config import QdrantConfig
 from artsearch.retrieval.qdrant import (
+    AsyncQdrantSearchService,
     QdrantIntegrationError,
     QdrantSearchService,
     build_qdrant_client,
@@ -290,6 +293,63 @@ def test_search_fuses_clip_and_csd_and_limits_artists(
             config.csd_vector_name,
         }
         assert all(metric.mean_recall == 1.0 for metric in evaluation.metrics)
+
+
+def test_async_search_awaits_qdrant_without_changing_fusion_evidence() -> None:
+    class AsyncClient:
+        def __init__(self) -> None:
+            self.collection_name = ""
+            self.requests = []
+
+        async def query_batch_points(self, *, collection_name, requests):
+            self.collection_name = collection_name
+            self.requests = requests
+            clip = [
+                SimpleNamespace(
+                    score=0.9,
+                    payload={"artwork_id": "art-1", "artist_id": "artist-1"},
+                )
+            ]
+            style = [
+                SimpleNamespace(
+                    score=0.8,
+                    payload={"artwork_id": "art-1", "artist_id": "artist-1"},
+                )
+            ]
+            fused = [
+                SimpleNamespace(
+                    score=0.7,
+                    payload={
+                        "artwork_id": "art-1",
+                        "artist_id": "artist-1",
+                        "content_class": "finished_illustration",
+                    },
+                )
+            ]
+            return [
+                SimpleNamespace(points=clip),
+                SimpleNamespace(points=style),
+                SimpleNamespace(points=fused),
+            ]
+
+    client = AsyncClient()
+    config = _qdrant_config()
+    service = AsyncQdrantSearchService(client, config)
+
+    hits = asyncio.run(
+        service.search_by_vectors(
+            np.array([1.0, 0.0], dtype=np.float32),
+            np.array([0.0, 1.0], dtype=np.float32),
+            top_k=1,
+        )
+    )
+
+    assert client.collection_name == config.alias_name
+    assert len(client.requests) == 3
+    assert hits[0].artwork_id == "art-1"
+    assert hits[0].clip_score == 0.9
+    assert hits[0].style_score == 0.8
+    assert hits[0].fusion_score == 0.7
 
 
 def test_ann_evaluation_targets_physical_collection_before_alias_promotion(

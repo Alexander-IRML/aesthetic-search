@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Protocol, Sequence
 from urllib.parse import quote, urlsplit
 
-from sqlalchemy import Engine, and_, func, select
+from sqlalchemy import and_, func, select
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from artsearch.api.config import SearchApiConfig
 from artsearch.ingest.config import AppConfig
@@ -25,9 +29,9 @@ class CatalogArtwork:
 
 
 class ArtworkCatalog(Protocol):
-    def get_many(self, artwork_ids: Sequence[str]) -> dict[str, CatalogArtwork]: ...
+    async def get_many(self, artwork_ids: Sequence[str]) -> dict[str, CatalogArtwork]: ...
 
-    def local_image_path(self, artwork_id: str) -> Path | None: ...
+    async def local_image_path(self, artwork_id: str) -> Path | None: ...
 
 
 class SQLiteArtworkCatalog:
@@ -37,7 +41,10 @@ class SQLiteArtworkCatalog:
         self.app_config = app_config
         self.api_config = api_config
 
-    def get_many(self, artwork_ids: Sequence[str]) -> dict[str, CatalogArtwork]:
+    async def get_many(self, artwork_ids: Sequence[str]) -> dict[str, CatalogArtwork]:
+        return await asyncio.to_thread(self._get_many, artwork_ids)
+
+    def _get_many(self, artwork_ids: Sequence[str]) -> dict[str, CatalogArtwork]:
         unique_ids = list(dict.fromkeys(artwork_ids))
         if not unique_ids:
             return {}
@@ -47,11 +54,24 @@ class SQLiteArtworkCatalog:
             rows = connection.execute(
                 f"""
                 SELECT a.artwork_id, a.artist_id, r.display_name, r.source_url,
-                       a.processed_path, o.object_key, o.object_uri
+                       a.processed_path,
+                       COALESCE(t.object_key, d.object_key, o.object_key) AS object_key,
+                       COALESCE(t.object_uri, d.object_uri, o.object_uri) AS object_uri,
+                       (
+                           SELECT fd.candidate_json
+                             FROM artwork_filter_decisions AS fd
+                            WHERE fd.candidate_id = a.source_id
+                            ORDER BY fd.processed_at DESC, fd.decision_key DESC
+                            LIMIT 1
+                       ) AS source_candidate_json
                   FROM artworks AS a
                   JOIN artists AS r ON r.artist_id = a.artist_id
                   LEFT JOIN artwork_objects AS o
                     ON o.artwork_id = a.artwork_id AND o.role = 'original'
+                  LEFT JOIN artwork_objects AS d
+                    ON d.artwork_id = a.artwork_id AND d.role = 'display'
+                  LEFT JOIN artwork_objects AS t
+                    ON t.artwork_id = a.artwork_id AND t.role = 'thumbnail'
                  WHERE a.artwork_id IN ({placeholders})
                 """,
                 unique_ids,
@@ -66,13 +86,17 @@ class SQLiteArtworkCatalog:
                     artwork_id=str(row["artwork_id"]),
                     object_key=row["object_key"],
                     object_uri=row["object_uri"],
+                    source_media_url=_source_media_url(row["source_candidate_json"]),
                 ),
                 source_url=_optional_text(row["source_url"]),
             )
             for row in rows
         }
 
-    def local_image_path(self, artwork_id: str) -> Path | None:
+    async def local_image_path(self, artwork_id: str) -> Path | None:
+        return await asyncio.to_thread(self._local_image_path, artwork_id)
+
+    def _local_image_path(self, artwork_id: str) -> Path | None:
         if not self.api_config.serve_local_images:
             return None
         with connect(self.app_config.database_path) as connection:
@@ -103,11 +127,11 @@ class SQLiteArtworkCatalog:
 class PostgresArtworkCatalog:
     """Production metadata lookup that emits CDN URLs, never object credentials."""
 
-    def __init__(self, engine: Engine, api_config: SearchApiConfig) -> None:
+    def __init__(self, engine: AsyncEngine, api_config: SearchApiConfig) -> None:
         self.engine = engine
         self.api_config = api_config
 
-    def get_many(self, artwork_ids: Sequence[str]) -> dict[str, CatalogArtwork]:
+    async def get_many(self, artwork_ids: Sequence[str]) -> dict[str, CatalogArtwork]:
         unique_ids = list(dict.fromkeys(artwork_ids))
         if not unique_ids:
             return {}
@@ -120,6 +144,7 @@ class PostgresArtworkCatalog:
                 artworks.c.artist_id,
                 artworks.c.post_text,
                 artworks.c.alt_text,
+                artworks.c.metadata,
                 artists.c.display_name,
                 artists.c.source_url,
                 func.coalesce(
@@ -157,8 +182,8 @@ class PostgresArtworkCatalog:
             )
             .where(artworks.c.artwork_id.in_(unique_ids))
         )
-        with self.engine.connect() as connection:
-            rows = connection.execute(statement).mappings().all()
+        async with self.engine.connect() as connection:
+            rows = (await connection.execute(statement)).mappings().all()
         return {
             str(row["artwork_id"]): CatalogArtwork(
                 artwork_id=str(row["artwork_id"]),
@@ -169,6 +194,7 @@ class PostgresArtworkCatalog:
                     artwork_id=str(row["artwork_id"]),
                     object_key=row["object_key"],
                     object_uri=row["object_uri"],
+                    source_media_url=_source_media_url(row["metadata"]),
                 ),
                 source_url=_optional_text(row["source_url"]),
                 post_text=_bounded_metadata_text(row["post_text"]),
@@ -177,7 +203,7 @@ class PostgresArtworkCatalog:
             for row in rows
         }
 
-    def local_image_path(self, artwork_id: str) -> Path | None:
+    async def local_image_path(self, artwork_id: str) -> Path | None:
         return None
 
 
@@ -187,6 +213,7 @@ def _public_image_url(
     artwork_id: str,
     object_key: object,
     object_uri: object,
+    source_media_url: str | None = None,
 ) -> str:
     key = _optional_text(object_key)
     if config.asset_base_url and key:
@@ -197,7 +224,42 @@ def _public_image_url(
         return uri
     if config.serve_local_images:
         return f"/api/artworks/{quote(artwork_id, safe='')}/image"
-    return ""
+    return source_media_url or ""
+
+
+def _source_media_url(value: object) -> str | None:
+    payload: Mapping[str, object]
+    if isinstance(value, Mapping):
+        payload = value
+    elif isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(decoded, Mapping):
+            return None
+        payload = decoded
+    else:
+        return None
+    for field in ("fullsize_url", "thumbnail_url"):
+        candidate = _optional_text(payload.get(field))
+        if candidate is None:
+            continue
+        parsed = urlsplit(candidate)
+        hostname = (parsed.hostname or "").lower()
+        try:
+            port = parsed.port
+        except ValueError:
+            continue
+        if (
+            parsed.scheme == "https"
+            and parsed.username is None
+            and parsed.password is None
+            and port in {None, 443}
+            and (hostname == "cdn.bsky.app" or hostname.endswith(".bsky.app"))
+        ):
+            return candidate
+    return None
 
 
 def _optional_text(value: object) -> str | None:

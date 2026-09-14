@@ -55,7 +55,8 @@ def test_build_manifest_keeps_latest_source_version_and_builds_metrics(tmp_path:
         "s3://bucket/artsearch/corpus/one.jpg",
         None,
     ]
-    assert frame["original_sha256"].to_list() == ["a" * 64, None]
+    assert frame["object_sha256"].to_list() == ["a" * 64, None]
+    assert frame["object_role"].to_list() == ["original", None]
     assert metric_result.row_count == 2
     assert manifest_summary(manifest)["rows"] == 2
 
@@ -77,6 +78,24 @@ def test_empty_run_produces_valid_empty_parquet_products(tmp_path: Path) -> None
     assert metric_result.row_count == 0
 
 
+def test_manifest_accepts_legacy_candidate_rows_without_blob_cid(tmp_path: Path) -> None:
+    candidates = tmp_path / "candidates.jsonl"
+    decisions = tmp_path / "decisions.jsonl"
+    manifest = tmp_path / "manifest.parquet"
+    candidate = _candidate("legacy", "cid-legacy", "did:plc:legacy")
+    candidate.pop("blob_cid")
+    _write_jsonl(candidates, [candidate])
+    _write_jsonl(
+        decisions,
+        [_decision("legacy", "cid-legacy", "accept", "2026-08-12T10:00:00Z")],
+    )
+
+    build_corpus_manifest(candidates, decisions, manifest)
+
+    frame = pl.read_parquet(manifest)
+    assert frame["blob_cid"].to_list() == [None]
+
+
 def _candidate(candidate_id: str, cid: str, did: str) -> dict[str, object]:
     return {
         "candidate_id": candidate_id,
@@ -84,6 +103,7 @@ def _candidate(candidate_id: str, cid: str, did: str) -> dict[str, object]:
         "author_handle": f"{candidate_id}.bsky.social",
         "post_uri": f"at://{did}/app.bsky.feed.post/{candidate_id}",
         "post_cid": cid,
+        "blob_cid": f"blob-{cid}",
         "image_index": 0,
         "thumbnail_url": f"https://cdn.example/{candidate_id}-thumb.jpg",
         "fullsize_url": f"https://cdn.example/{candidate_id}.jpg",

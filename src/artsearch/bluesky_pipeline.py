@@ -5,10 +5,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from artsearch.artwork_filter.batch import completed_candidate_keys, iter_candidate_batches
-from artsearch.artwork_filter.corpus import CorpusRouter
+from artsearch.artwork_filter.corpus import CorpusRouter, RoutedImage
 from artsearch.artwork_filter.corpus_store import ArtworkFilterCorpusStore
 from artsearch.artwork_filter.enums import FilterDecision
-from artsearch.artwork_filter.schemas import ImageCandidate
+from artsearch.artwork_filter.schemas import FilterResult, ImageCandidate
 from artsearch.artwork_filter.service import ArtworkFilterService
 from artsearch.bluesky.io import JSONLCandidateStore
 
@@ -49,6 +49,13 @@ class PipelineSummary:
         return bool(self.actor_errors or self.classification_errors or self.route_errors)
 
 
+@dataclass(frozen=True)
+class PipelineBatchOutcome:
+    results: list[FilterResult]
+    routed: list[RoutedImage]
+    stored: dict[str, int]
+
+
 class BlueskyArtworkPipeline:
     """Own integration flow while keeping collection, filtering, and ingest independent."""
 
@@ -85,14 +92,14 @@ class BlueskyArtworkPipeline:
                 batch.append(candidate)
                 if len(batch) == self.service.config.model.batch_size:
                     ready, batch = batch, []
-                    await self._process_batch(ready, summary)
+                    await self.process_candidates(ready, summary=summary)
             if batch:
                 ready, batch = batch, []
-                await self._process_batch(ready, summary)
+                await self.process_candidates(ready, summary=summary)
         except Exception:
             if batch:
                 ready, batch = batch, []
-                await self._process_batch(ready, summary)
+                await self.process_candidates(ready, summary=summary)
             if self.candidate_store is not None:
                 self.candidate_store.commit()
             raise
@@ -118,7 +125,7 @@ class BlueskyArtworkPipeline:
             skip_candidate_keys=skip_keys,
             on_skip=record_skip,
         ):
-            await self._process_batch(batch, summary, record_candidates=False)
+            await self.process_candidates(batch, summary=summary, record_candidates=False)
         return summary
 
     def completed_candidate_keys(
@@ -136,13 +143,16 @@ class BlueskyArtworkPipeline:
             prompt_version=classifier.prompt_version if classifier is not None else None,
         )
 
-    async def _process_batch(
+    async def process_candidates(
         self,
         candidates: list[ImageCandidate],
-        summary: PipelineSummary,
         *,
+        summary: PipelineSummary | None = None,
         record_candidates: bool = True,
-    ) -> None:
+    ) -> PipelineBatchOutcome:
+        """Process one bounded batch and return its evidence to upstream coordinators."""
+
+        summary = summary or PipelineSummary()
         if record_candidates and self.candidate_store is not None:
             self.candidate_store.append_many(candidates)
         results = await self.service.classify_many(candidates)
@@ -162,3 +172,4 @@ class BlueskyArtworkPipeline:
         summary.duplicates += stored["duplicates"]
         summary.review_stored += stored["review_stored"]
         summary.route_errors += stored["errors"]
+        return PipelineBatchOutcome(results=results, routed=routed, stored=stored)

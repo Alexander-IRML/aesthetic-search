@@ -35,7 +35,7 @@ from artsearch.postgres.schema import (
 )
 
 
-IMPORT_CONTRACT_VERSION = "sqlite-cutover-v1"
+IMPORT_CONTRACT_VERSION = "sqlite-cutover-v2"
 
 
 class SQLiteMigrationError(RuntimeError):
@@ -77,6 +77,9 @@ def publish_sqlite_snapshot(
     allow_existing_catalog: bool = False,
     qdrant_collection_name: str | None = None,
     model_bundle: Mapping[str, Any] | None = None,
+    include_embeddings: bool = True,
+    include_filter_history: bool = True,
+    include_run_history: bool = True,
 ) -> SQLiteMigrationReport:
     """Transactionally upsert and verify a consistent SQLite snapshot."""
 
@@ -91,7 +94,19 @@ def publish_sqlite_snapshot(
         snapshot_path = Path(temp_dir) / "snapshot.sqlite3"
         _backup_sqlite(source_path, snapshot_path)
         source_sha256, source_size = _file_identity(snapshot_path)
-        scope = _scope_metadata(normalized_scope if candidate_ids is not None else None)
+        publication_profile = {
+            "include_embeddings": include_embeddings,
+            "include_filter_history": include_filter_history,
+            "include_run_history": include_run_history,
+        }
+        if qdrant_collection_name and not include_embeddings:
+            raise SQLiteMigrationError(
+                "Qdrant outbox publication requires PostgreSQL embedding publication"
+            )
+        scope = _scope_metadata(
+            normalized_scope if candidate_ids is not None else None,
+            publication_profile=publication_profile,
+        )
         import_key = _import_key(source_sha256, scope)
         import_id = uuid7()
 
@@ -129,10 +144,15 @@ def publish_sqlite_snapshot(
                     )
 
                     row_counts: dict[str, int] = {}
-                    for spec in _table_specs(scoped=candidate_ids is not None):
+                    for spec in _table_specs(
+                        scoped=candidate_ids is not None,
+                        include_embeddings=include_embeddings,
+                        include_filter_history=include_filter_history,
+                        include_run_history=include_run_history,
+                    ):
                         row_counts[spec.source_name] = _import_table(source, target, spec)
                     _restore_duplicate_links(source, target, scoped=candidate_ids is not None)
-                    _hydrate_artwork_text(target)
+                    _hydrate_artwork_text(source, target, scoped=candidate_ids is not None)
                     _hydrate_object_uris(target)
                     if model_bundle:
                         _register_model_bundle(target, model_bundle)
@@ -234,11 +254,21 @@ def _file_identity(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), size
 
 
-def _scope_metadata(candidate_ids: Sequence[str] | None) -> dict[str, object]:
+def _scope_metadata(
+    candidate_ids: Sequence[str] | None,
+    *,
+    publication_profile: Mapping[str, bool] | None = None,
+) -> dict[str, object]:
+    profile = dict(publication_profile or {})
     if candidate_ids is None:
-        return {"mode": "full"}
+        return {"mode": "full", "publication_profile": profile}
     digest = hashlib.sha256("\n".join(candidate_ids).encode("utf-8")).hexdigest()
-    return {"mode": "candidates", "candidate_count": len(candidate_ids), "sha256": digest}
+    return {
+        "mode": "candidates",
+        "candidate_count": len(candidate_ids),
+        "sha256": digest,
+        "publication_profile": profile,
+    }
 
 
 def _import_key(source_sha256: str, scope: Mapping[str, object]) -> str:
@@ -397,7 +427,13 @@ def _existing_report(row: Mapping[str, Any]) -> SQLiteMigrationReport:
     )
 
 
-def _table_specs(*, scoped: bool) -> tuple[_TableSpec, ...]:
+def _table_specs(
+    *,
+    scoped: bool,
+    include_embeddings: bool = True,
+    include_filter_history: bool = True,
+    include_run_history: bool = True,
+) -> tuple[_TableSpec, ...]:
     artwork_scope = """
         SELECT a.* FROM artworks a
         JOIN migration_candidate_ids scope ON scope.candidate_id = a.source_id
@@ -473,6 +509,16 @@ def _table_specs(*, scoped: bool) -> tuple[_TableSpec, ...]:
             "SELECT * FROM bluesky_roster_intake_state",
         ),
     )
+    selected = tuple(
+        spec
+        for spec in specs
+        if (include_embeddings or spec.source_name != "embeddings")
+        and (
+            include_filter_history
+            or spec.source_name not in {"artwork_filter_decisions", "artwork_filter_routes"}
+        )
+        and (include_run_history or spec.source_name not in {"runs", "run_events"})
+    )
     if not scoped:
         return tuple(
             _TableSpec(
@@ -481,9 +527,9 @@ def _table_specs(*, scoped: bool) -> tuple[_TableSpec, ...]:
                 transform=spec.transform,
                 batch_size=spec.batch_size,
             )
-            for spec in specs
+            for spec in selected
         )
-    return tuple(spec for spec in specs if spec.scoped_query is not None)
+    return tuple(spec for spec in selected if spec.scoped_query is not None)
 
 
 def _import_table(
@@ -547,45 +593,88 @@ def _restore_duplicate_links(
         )
 
 
-def _hydrate_artwork_text(connection: Connection) -> None:
-    connection.execute(
-        text(
-            """
-            WITH latest AS (
-              SELECT DISTINCT ON (candidate_id)
-                     candidate_id, candidate
-                FROM ingest.artwork_filter_decisions
-               ORDER BY candidate_id, processed_at DESC, decision_key DESC
-            )
-            UPDATE catalog.artworks a
-               SET post_text = NULLIF(latest.candidate ->> 'post_text', ''),
-                   alt_text = NULLIF(latest.candidate ->> 'alt_text', ''),
-                   metadata = a.metadata || jsonb_strip_nulls(jsonb_build_object(
-                     'post_uri', latest.candidate ->> 'post_uri',
-                     'author_did', latest.candidate ->> 'author_did',
-                     'author_handle', latest.candidate ->> 'author_handle',
-                     'created_at', latest.candidate ->> 'created_at'
-                   )),
-                   updated_at = now()
-              FROM latest
+def _hydrate_artwork_text(
+    source: sqlite3.Connection,
+    connection: Connection,
+    *,
+    scoped: bool,
+) -> None:
+    """Project latest source text into catalog rows without retaining evidence JSON."""
+
+    query = """
+        WITH ranked AS (
+            SELECT a.artwork_id, d.candidate_json,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY a.artwork_id
+                       ORDER BY d.processed_at DESC, d.decision_key DESC
+                   ) AS decision_rank
+              FROM artworks AS a
+              JOIN artwork_filter_decisions AS d ON d.candidate_id = a.source_id
              WHERE a.source_platform = 'bluesky'
-               AND a.source_id = latest.candidate_id
-            """
         )
-    )
+        SELECT artwork_id, candidate_json
+          FROM ranked
+         WHERE decision_rank = 1
+    """
+    if scoped:
+        query += """
+           AND artwork_id IN (
+               SELECT artwork_id
+                 FROM artworks
+                WHERE source_id IN (SELECT candidate_id FROM migration_candidate_ids)
+           )
+        """
+    for row in source.execute(query):
+        try:
+            candidate = json.loads(row["candidate_json"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        metadata = {
+            key: candidate.get(key)
+            for key in (
+                "post_uri",
+                "post_cid",
+                "blob_cid",
+                "author_did",
+                "author_handle",
+                "created_at",
+                "thumbnail_url",
+                "fullsize_url",
+            )
+            if candidate.get(key) is not None
+        }
+        connection.execute(
+            update(artworks)
+            .where(artworks.c.artwork_id == row["artwork_id"])
+            .values(
+                post_text=str(candidate.get("post_text") or "") or None,
+                alt_text=str(candidate.get("alt_text") or "") or None,
+                metadata=artworks.c.metadata.op("||")(metadata),
+                updated_at=func.now(),
+            )
+        )
 
 
 def _hydrate_object_uris(connection: Connection) -> None:
     connection.execute(
         text(
             """
+            WITH preferred AS (
+              SELECT DISTINCT ON (artwork_id) artwork_id, object_uri
+                FROM catalog.artwork_objects
+               ORDER BY artwork_id,
+                        CASE role
+                          WHEN 'thumbnail' THEN 0
+                          WHEN 'display' THEN 1
+                          ELSE 2
+                        END
+            )
             UPDATE catalog.artworks a
-               SET object_uri = o.object_uri,
+               SET object_uri = preferred.object_uri,
                    updated_at = now()
-              FROM catalog.artwork_objects o
-             WHERE o.artwork_id = a.artwork_id
-               AND o.role = 'original'
-               AND a.object_uri IS DISTINCT FROM o.object_uri
+              FROM preferred
+             WHERE preferred.artwork_id = a.artwork_id
+               AND a.object_uri IS DISTINCT FROM preferred.object_uri
             """
         )
     )

@@ -15,6 +15,7 @@ class SearchApiConfig(BaseModel):
     version: str = "1.0.0"
     host: str = "127.0.0.1"
     port: int = 8000
+    vector_backend: Literal["qdrant", "faiss"] = "qdrant"
     catalog_backend: Literal["sqlite", "postgres"] = "sqlite"
     telemetry_enabled: bool = True
     serve_local_images: bool = True
@@ -30,6 +31,7 @@ class SearchApiConfig(BaseModel):
         "image/webp",
     )
     max_concurrent_inferences: int = 1
+    max_pending_inferences: int = 2
     inference_queue_timeout_seconds: float = 2.0
     inference_timeout_seconds: float = 120.0
     rate_limit_requests: int = 12
@@ -37,9 +39,10 @@ class SearchApiConfig(BaseModel):
     feedback_rate_limit_requests: int = 120
     feedback_rate_limit_window_seconds: int = 60
     trust_proxy_headers: bool = False
+    visitor_hash_secret_env: str = "ARTSEARCH_VISITOR_HASH_SECRET"
     config_hash: str = Field(default="", exclude=True)
 
-    @field_validator("version", "host", "asset_base_url_env")
+    @field_validator("version", "host", "asset_base_url_env", "visitor_hash_secret_env")
     @classmethod
     def _required_text(cls, value: str) -> str:
         normalized = value.strip()
@@ -80,6 +83,7 @@ class SearchApiConfig(BaseModel):
             "max_upload_bytes": self.max_upload_bytes,
             "max_image_pixels": self.max_image_pixels,
             "max_concurrent_inferences": self.max_concurrent_inferences,
+            "max_pending_inferences": self.max_pending_inferences,
             "inference_queue_timeout_seconds": self.inference_queue_timeout_seconds,
             "inference_timeout_seconds": self.inference_timeout_seconds,
             "rate_limit_requests": self.rate_limit_requests,

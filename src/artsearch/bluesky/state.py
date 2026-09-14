@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Mapping
 
 from artsearch.artwork_filter.hashing import stable_json_hash
 from artsearch.ingest.db import connect, init_db
@@ -142,6 +143,40 @@ class SQLiteBlueskyIntakeStateStore:
                 ),
             )
             connection.commit()
+
+    def seed_high_water(self, actor_posts: Mapping[str, str]) -> int:
+        """Seed missing actor cursors from already persisted canonical posts."""
+
+        now = datetime.now(timezone.utc).isoformat()
+        rows = [
+            (
+                _actor_key(actor),
+                actor,
+                post_uri,
+                now,
+                now,
+            )
+            for actor, post_uri in actor_posts.items()
+            if actor.strip() and post_uri.strip()
+        ]
+        if not rows:
+            return 0
+        with connect(self.database_path) as connection:
+            before = connection.total_changes
+            connection.executemany(
+                """
+                INSERT OR IGNORE INTO bluesky_actor_intake_state (
+                    actor_key, actor, high_water_post_uri,
+                    pending_high_water_post_uri, resume_cursor, last_scan_complete,
+                    last_candidate_count, last_error, last_attempt_at,
+                    last_completed_at
+                ) VALUES (?, ?, ?, NULL, NULL, 1, 0, NULL, ?, ?)
+                """,
+                rows,
+            )
+            inserted = connection.total_changes - before
+            connection.commit()
+        return inserted
 
     def roster_start(self, actors: list[str]) -> tuple[str, int]:
         if not actors:

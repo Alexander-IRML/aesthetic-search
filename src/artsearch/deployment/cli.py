@@ -6,6 +6,7 @@ import json
 
 from artsearch.deployment.credentials import (
     ensure_session_secret,
+    ensure_visitor_hash_secret,
     write_neon_connection_string,
     write_qdrant_credentials,
 )
@@ -81,6 +82,19 @@ def main() -> None:
         print("The secret was not printed or logged.")
         return
 
+    if args.command == "generate-visitor-secret":
+        try:
+            destination, generated = ensure_visitor_hash_secret(
+                args.env_file,
+                template=args.template,
+            )
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
+        status = "generated" if generated else "already present"
+        print(f"Visitor hash secret {status} in {destination} (mode 0600).")
+        print("The secret was not printed or logged.")
+        return
+
     if args.command == "preflight":
         try:
             report = run_deployment_preflight(
@@ -139,6 +153,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     session.add_argument("--env-file", default="deploy/alpha/.env")
     session.add_argument("--template", default="deploy/alpha/.env.example")
+
+    visitor = subparsers.add_parser(
+        "generate-visitor-secret",
+        help="Generate the private key for pseudonymous unique-visitor counts.",
+    )
+    visitor.add_argument("--env-file", default="deploy/alpha/.env")
+    visitor.add_argument("--template", default="deploy/alpha/.env.example")
 
     preflight = subparsers.add_parser(
         "preflight",

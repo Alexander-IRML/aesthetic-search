@@ -41,6 +41,7 @@ def candidates_from_feed_item(
     record = _mapping(post.get("record")) or {}
     embed = _mapping(post.get("embed")) or {}
     images = _image_views_from_embed(embed)
+    blob_cids = _image_blob_cids_from_record(record)
     if not images:
         return []
     if moderation_reasons_from_feed_item(item, moderation=moderation):
@@ -72,6 +73,7 @@ def candidates_from_feed_item(
                 author_handle=_string(author.get("handle")),
                 post_uri=post_uri,
                 post_cid=_string(post.get("cid")),
+                blob_cid=blob_cids[image_index] if image_index < len(blob_cids) else None,
                 image_index=image_index,
                 thumbnail_url=thumbnail_url,
                 fullsize_url=fullsize_url,
@@ -196,6 +198,27 @@ def _image_views_from_embed(embed: Mapping[str, Any]) -> list[Mapping[str, Any]]
         media = _mapping(embed.get("media"))
         return _image_views_from_embed(media) if media is not None else []
     return []
+
+
+def _image_blob_cids_from_record(record: Mapping[str, Any]) -> list[str | None]:
+    embed = _mapping(record.get("embed")) or {}
+    embed_type = _string(embed.get("$type"))
+    if embed_type == "app.bsky.embed.recordWithMedia":
+        embed = _mapping(embed.get("media")) or {}
+        embed_type = _string(embed.get("$type"))
+    if embed_type != "app.bsky.embed.images":
+        return []
+    images = embed.get("images")
+    if not isinstance(images, list):
+        return []
+    cids: list[str | None] = []
+    for value in images:
+        image = _mapping(value) or {}
+        blob = _mapping(image.get("image")) or {}
+        ref = blob.get("ref")
+        linked = _mapping(ref)
+        cids.append(_string(linked.get("$link")) if linked is not None else _string(ref))
+    return cids
 
 
 def _quote_metadata(embed: Mapping[str, Any]) -> tuple[bool, str | None]:

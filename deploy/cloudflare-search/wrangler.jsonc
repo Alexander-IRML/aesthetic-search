@@ -13,6 +13,7 @@
   },
   "secrets": {
     "required": [
+      "ARTSEARCH_VISITOR_HASH_SECRET",
       "DATABASE_URL",
       "QDRANT_API_KEY",
       "QDRANT_URL"
@@ -31,7 +32,7 @@
       "name": "SEARCH_RATE_LIMITER",
       "namespace_id": "50010",
       "simple": {
-        "limit": 4,
+        "limit": 12,
         "period": 60
       }
     },
@@ -39,7 +40,7 @@
       "name": "SEARCH_LOCATION_RATE_LIMITER",
       "namespace_id": "50011",
       "simple": {
-        "limit": 8,
+        "limit": 120,
         "period": 60
       }
     },
@@ -66,6 +67,22 @@
         "limit": 24,
         "period": 60
       }
+    },
+    {
+      "name": "VISIT_RATE_LIMITER",
+      "namespace_id": "50015",
+      "simple": {
+        "limit": 10,
+        "period": 60
+      }
+    },
+    {
+      "name": "VISIT_LOCATION_RATE_LIMITER",
+      "namespace_id": "50016",
+      "simple": {
+        "limit": 300,
+        "period": 60
+      }
     }
   ],
   "vars": {
@@ -83,7 +100,7 @@
       "class_name": "ArtSearchApiContainer",
       "image": "../../Dockerfile",
       "image_build_context": "../..",
-      "max_instances": 1,
+      "max_instances": 3,
       "instance_type": {
         "vcpu": 2,
         "memory_mib": 6144,

@@ -12,7 +12,6 @@ REQUIRED_COLUMNS = {
     "decision",
     "predicted_class",
     "image_sha256",
-    "original_sha256",
     "object_store_uri",
     "is_search_eligible",
     "duration_ms",
@@ -32,6 +31,18 @@ def main() -> None:
     spark.sparkContext.setLogLevel("WARN")
     try:
         manifests = spark.read.parquet(_spark_uri(args.input))
+        if "object_sha256" not in manifests.columns:
+            if "original_sha256" not in manifests.columns:
+                raise ValueError(
+                    "manifest is missing both v2 object_sha256 and v1 original_sha256"
+                )
+            manifests = manifests.withColumn("object_sha256", F.col("original_sha256"))
+        for optional_source_column in ("blob_cid", "fullsize_url", "thumbnail_url"):
+            if optional_source_column not in manifests.columns:
+                manifests = manifests.withColumn(
+                    optional_source_column,
+                    F.lit(None).cast("string"),
+                )
         missing = sorted(REQUIRED_COLUMNS - set(manifests.columns))
         if missing:
             raise ValueError(f"manifest is missing required columns: {', '.join(missing)}")
@@ -88,7 +99,7 @@ def main() -> None:
         duplicate_hashes = (
             corpus.withColumn(
                 "content_sha256",
-                F.coalesce("original_sha256", "image_sha256"),
+                F.coalesce("object_sha256", "image_sha256"),
             )
             .where(F.col("content_sha256").isNotNull())
             .groupBy("content_sha256")
@@ -106,11 +117,20 @@ def main() -> None:
             F.sum(F.col("author_did").isNull().cast("long")).alias("missing_author_did"),
             F.sum(F.col("image_sha256").isNull().cast("long")).alias("missing_image_sha256"),
             F.sum(
-                ((F.col("decision") == "accept") & F.col("original_sha256").isNull()).cast("long")
+                ((F.col("decision") == "accept") & F.col("object_sha256").isNull()).cast("long")
             ).alias("accepted_missing_original_hash"),
             F.sum(
                 (F.col("is_search_eligible") & F.col("object_store_uri").isNull()).cast("long")
             ).alias("search_eligible_missing_object"),
+            F.sum(
+                (
+                    F.col("is_search_eligible")
+                    & F.col("object_store_uri").isNull()
+                    & F.col("blob_cid").isNull()
+                    & F.col("fullsize_url").isNull()
+                    & F.col("thumbnail_url").isNull()
+                ).cast("long")
+            ).alias("search_eligible_missing_media_reference"),
             F.sum(
                 (
                     F.col("decision").isNull()
@@ -131,6 +151,8 @@ def main() -> None:
                     F.col("accepted_missing_original_hash"),
                     F.lit("search_eligible_missing_object"),
                     F.col("search_eligible_missing_object"),
+                    F.lit("search_eligible_missing_media_reference"),
+                    F.col("search_eligible_missing_media_reference"),
                     F.lit("invalid_decision"),
                     F.col("invalid_decision"),
                 )

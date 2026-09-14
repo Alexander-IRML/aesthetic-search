@@ -17,6 +17,9 @@ ENV PYSPARK_PYTHON=/usr/local/bin/python
 
 USER airflow
 WORKDIR /opt/artsearch
+COPY --chown=airflow:root .python-version /tmp/artsearch-python-version
+RUN test "$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" = \
+        "$(cut -d. -f1-2 /tmp/artsearch-python-version)"
 COPY --chown=airflow:root orchestration/airflow/requirements.txt /tmp/airflow-requirements.txt
 RUN pip install --no-cache-dir \
     --requirement /tmp/airflow-requirements.txt \

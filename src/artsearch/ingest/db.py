@@ -42,6 +42,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             "TEXT",
         )
         _ensure_column(conn, "bluesky_actor_intake_state", "resume_cursor", "TEXT")
+    if _table_exists(conn, "artwork_objects"):
+        _expand_artwork_object_roles(conn)
     conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
     _ensure_column(conn, "artists", "source_platform", "TEXT DEFAULT 'manual'")
     _ensure_column(
@@ -117,6 +119,45 @@ def _remove_legacy_dino_embedding_columns(conn: sqlite3.Connection) -> None:
     )
     conn.execute("DROP TABLE embeddings")
     conn.execute("ALTER TABLE embeddings_csd_migration RENAME TO embeddings")
+
+
+def _expand_artwork_object_roles(conn: sqlite3.Connection) -> None:
+    """Rebuild the early original-only table before publishing display derivatives."""
+
+    table_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'artwork_objects'"
+    ).fetchone()[0]
+    normalized_sql = str(table_sql)
+    if "'display'" in normalized_sql and "'thumbnail'" in normalized_sql:
+        return
+    conn.execute("DROP TABLE IF EXISTS artwork_objects_role_migration")
+    conn.execute(
+        """
+        CREATE TABLE artwork_objects_role_migration (
+            artwork_id      TEXT NOT NULL REFERENCES artworks(artwork_id),
+            role            TEXT NOT NULL
+                CHECK (role IN ('original', 'display', 'thumbnail')),
+            object_key      TEXT NOT NULL,
+            object_uri      TEXT NOT NULL,
+            content_sha256  TEXT NOT NULL,
+            byte_size       INTEGER NOT NULL,
+            etag            TEXT,
+            published_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+            verified_at     TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (artwork_id, role)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO artwork_objects_role_migration
+        SELECT artwork_id, role, object_key, object_uri, content_sha256,
+               byte_size, etag, published_at, verified_at
+          FROM artwork_objects
+        """
+    )
+    conn.execute("DROP TABLE artwork_objects")
+    conn.execute("ALTER TABLE artwork_objects_role_migration RENAME TO artwork_objects")
 
 
 def start_run(conn: sqlite3.Connection, script_name: str, notes: str | None = None) -> int:

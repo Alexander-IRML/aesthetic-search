@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
 
 from artsearch.postgres.database import (
     PostgresConfigurationError,
+    build_async_engine,
     redact_database_url,
     resolve_database_url,
 )
@@ -57,3 +59,19 @@ def test_cloud_database_url_requires_explicit_tls_mode() -> None:
             config,
             environ={"DATABASE_URL": "postgresql://app:secret@example/artsearch"},
         )
+
+
+def test_async_engine_uses_psycopg_async_dialect_without_connecting() -> None:
+    config = PostgresConfig(require_tls=True)
+    engine = build_async_engine(
+        config,
+        environ={
+            "DATABASE_URL": "postgresql://app:secret@pooler.example/artsearch?sslmode=require"
+        },
+    )
+
+    try:
+        assert engine.dialect.is_async is True
+        assert engine.url.drivername == "postgresql+psycopg"
+    finally:
+        asyncio.run(engine.dispose())

@@ -26,6 +26,7 @@ def test_alpha_environment_template_contains_no_committed_credentials() -> None:
         "QDRANT_API_KEY",
         "DATABASE_URL",
         "ARTSEARCH_SESSION_SECRET",
+        "ARTSEARCH_VISITOR_HASH_SECRET",
         "MODAL_TOKEN_SECRET",
     ):
         assert f"{variable}=\n" in template

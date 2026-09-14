@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from artsearch.postgres.metrics import calculate_feedback_metrics
+from artsearch.postgres.metrics import calculate_feedback_metrics, empty_product_metrics
 
 
 def test_feedback_metrics_require_complete_top_ten_for_precision_and_ndcg() -> None:
@@ -52,6 +52,18 @@ def test_feedback_metrics_use_the_latest_grade_per_query_result() -> None:
     assert metrics["bad"] == 1
     assert metrics["precision_at_10"] is None
     assert metrics["ndcg_at_10"] is None
+
+
+def test_empty_product_metrics_include_privacy_preserving_visitor_counts() -> None:
+    metrics = empty_product_metrics(status="disabled", window_days=7)
+
+    assert metrics["visitors"] == {
+        "total_unique_ips": 0,
+        "unique_ips_last_24h": 0,
+        "window_unique_ips": 0,
+        "latest_visit_at": None,
+        "identifier": "hmac_sha256_ip",
+    }
 
 
 def _row(query_id: str, rank: int, grade: str) -> dict[str, object]:

@@ -1,0 +1,79 @@
+version = "1.0.1-scale-no-image-cache"
+mode = "zero_shot"
+
+[model]
+model_id = "google/siglip2-base-patch16-224"
+revision = "75de2d55ec2d0b4efc50b3e9ad70dba96a7b2fa2"
+device = "auto"
+dtype = "auto"
+batch_size = 32
+compile_model = false
+# The prompt matrix is still cached once, but per-image SigLIP embeddings are
+# transient. At 10M plus rejects, retaining those vectors becomes another
+# unbounded corpus-sized artifact.
+cache_embeddings = false
+normalize_embeddings = true
+preprocessing_version = "siglip2-fixres-v1"
+
+[downloads]
+timeout_seconds = 20
+max_bytes = 15000000
+max_retries = 2
+prefer_thumbnail = true
+allow_fullsize_fallback = true
+user_agent = "ArtSearchResearch/0.1"
+max_concurrency = 16
+fullsize_max_concurrency = 24
+max_redirects = 5
+allowed_bluesky_image_hosts = ["cdn.bsky.app"]
+
+[media]
+min_width = 256
+min_height = 256
+min_area = 100000
+max_aspect_ratio = 8.0
+allow_animated = false
+convert_rgba_to_rgb_background = "white"
+reject_corrupt = true
+review_low_variance = true
+low_variance_threshold = 2.0
+max_pixels = 100000000
+
+[policy]
+automatic_accept_enabled = true
+trust_source_moderation_for_sfw = true
+source_safe_accepts_demo_eligible = true
+accept_finished_illustration = true
+accept_traditional_art = true
+accept_comic = true
+accept_character_sheet = true
+accept_sketch_or_wip = true
+accept_three_d_render = true
+accept_photo_of_art = false
+accept_art_merch_photo = false
+accept_commission_sheet = false
+accept_adoptable_sheet = false
+
+[thresholds]
+# Copy validated production thresholds here before a scale run. These values
+# match the current labeled bulk profile and are not universal probabilities.
+accept_score = 0.60
+reject_score = 0.56
+minimum_margin = 0.0
+force_review_below_confidence = 0.0
+
+[ensemble]
+visual_weight = 0.85
+text_weight = 0.10
+rule_adjustment_weight = 0.05
+
+[reposts]
+force_review_reposts = true
+reject_known_other_artist_reposts = false
+
+[storage]
+decision_jsonl_path = "data/filter/decisions.jsonl"
+cache_dir = "data/cache/artwork_filter"
+review_image_dir = "data/filter/review_images"
+download_review_images = false
+durability_mode = "strict"

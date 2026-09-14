@@ -1,4 +1,4 @@
-' ArtSearch architecture as implemented through 2026-08-26.
+' ArtSearch architecture as implemented through 2026-09-13.
 ' Render all diagrams with:
 '   plantuml docs/artsearch_architecture.puml
 '
@@ -42,12 +42,13 @@ package "Command-line surfaces" #F4F5F7 {
   component "PostgreSQL CLI\nupgrade / status / cutover / outbox" as PostgresCLI #E8F2FF
   component "Model operations dashboard\nserve / snapshot / install launcher" as MonitoringCLI #E8F2FF
   component "Daily intake launcher\nstatus / run-now / install-windows" as IntakeCLI #E8F2FF
+  component "Corpus discovery CLI\nrun / status / review / removal" as DiscoveryCLI #E8F2FF
 }
 
 package "Public image search" #F8FAFC {
   component "Upload-first web workbench\nresponsive same-origin frontend" as SearchFrontend #E8F2FF
-  component "FastAPI search coordinator\nupload policy + stable top-10 contract" as SearchAPI #E8F7EE
-  component "Bounded query encoder\npinned CLIP subject + CSD style" as QueryEncoder #FFF4D6
+  component "Async FastAPI coordinator\nupload policy + stable top-10 contract" as SearchAPI #E8F7EE
+  component "Three sharded model executors\none pinned CLIP + CSD owner each" as QueryEncoder #FFF4D6
 }
 
 package "Collection and ingestion" #F8FAFC {
@@ -61,6 +62,9 @@ package "Collection and ingestion" #F8FAFC {
   component "Airflow intake DAG\n5,000 target + staged publication" as IntakeDAG #E8F7EE
   component "Incremental source planner\nactor high-water + cursor + rotation" as SourcePlanner #E8F7EE
   component "Canonical publisher\nverified scope + transactional outbox" as CanonicalPublisher #E8F7EE
+  component "Discovery oracles\nsearch / packs / follows / manual seeds" as DiscoveryOracles #E8F7EE
+  component "Discovery coordinator\nprogressive qualification + expansion" as DiscoveryCoordinator #E8F7EE
+  component "PostgreSQL discovery graph\nprovenance + leased frontier" as DiscoveryGraph #E8F7EE
 }
 
 package "Artwork-content triage" #F8FAFC {
@@ -79,8 +83,10 @@ package "Review and model evaluation" #F8FAFC {
   component "Evaluation + calibration\nexact decision replay, metrics, sweeps" as Evaluation #F3E8FF
   component "Real-model smoke test\nfinite + batch/single checks" as SmokeTest #F3E8FF
   component "Read-only health aggregator\nquality + drift + operations alerts" as HealthSnapshot #F3E8FF
-  component "Local operations UI\noverview / quality / drift / lineage / review" as MonitoringUI #F3E8FF
+  component "Local operations UI\nhealth / review / corpus graph + controls" as MonitoringUI #F3E8FF
   component "HumanReviewService\nfilter labels + retrieval judgments" as HumanReview #F3E8FF
+  component "Creator review\napprove / defer / reject / block" as CreatorReview #F3E8FF
+  component "CorpusControlService\ncompact post map + bounded background jobs" as CorpusControl #F3E8FF
 }
 
 package "Embedding and retrieval" #F8FAFC {
@@ -104,6 +110,7 @@ package "Versioned configuration" #F4F5F7 {
   artifact "configs/model_dashboard.default.toml\nrefresh + health guardrails" as MonitoringConfig
   artifact "configs/intake_scheduler.default.toml\n10:00 window + 5,000 target" as IntakeConfig
   artifact "configs/search_api.default.toml\nupload, policy, concurrency, catalog" as SearchApiConfig
+  artifact "configs/discovery.default.toml\noracles, budgets, qualification, safety" as DiscoveryConfig
 }
 
 database "Neon PostgreSQL\ncanonical catalog + workflow + telemetry + outbox" as CanonicalPostgres #E8F7EE
@@ -119,6 +126,7 @@ package "Local private data boundary (Git-ignored)" #FFF8E7 {
   folder "data/corpus_archive/<timestamp>/\nprior active DB + raw + processed" as CorpusArchive
   file "data/filter/review/*.csv\ndata/filter/labels/*.jsonl\ndata/filter/reports/*" as ReviewArtifacts
   file "data/retrieval/judgments*.jsonl\ndata/retrieval/evaluation*.json" as RetrievalArtifacts
+  folder "data/control/jobs/\nrosters + atomic status + bounded logs" as ControlJobs
   database "data/artsearch.db\nSQLite metadata + vectors" as SQLite
   database "data/qdrant/\nrebuildable local serving index" as Qdrant #FFF8E7
   file "data/search_*.html\nlocal result galleries" as HTMLFiles
@@ -136,6 +144,7 @@ Operator --> QdrantCLI
 Operator --> PostgresCLI
 Operator --> MonitoringCLI
 Operator --> IntakeCLI
+Operator --> DiscoveryCLI
 AlphaUser --> CloudflareEdge : HTTPS image search
 CloudflareEdge --> SearchFrontend : cached application shell
 SearchFrontend --> SearchAPI : multipart image + opaque session key
@@ -156,6 +165,7 @@ PipelineCLI --> Orchestrator
 IntakeCLI --> IntakeDAG : deterministic daily run ID
 IntakeConfig ..> IntakeCLI
 IntakeDAG --> PipelineCLI : run-authors
+IntakeDAG --> DiscoveryCLI : discovery-enabled campaigns
 PipelineCLI --> SourcePlanner
 SourcePlanner --> SQLite : actor state + roster position
 IntakeCLI --> SchedulerEvents : start / skip / result
@@ -166,6 +176,13 @@ SafePilotConfig ..> BlueskyCollector
 BlueskyCollector --> CandidateJSONL : append/replace candidates
 BlueskyCollector --> CheckpointJSONL : successful actors
 BlueskyCollector --> Orchestrator : ImageCandidate stream
+DiscoveryCLI --> DiscoveryCoordinator
+DiscoveryConfig ..> DiscoveryCoordinator
+DiscoveryCoordinator --> DiscoveryOracles
+DiscoveryOracles --> BlueskyAPI : ranked creator leads + graph neighborhoods
+DiscoveryCoordinator --> DiscoveryGraph : observations, evidence, tasks, states
+DiscoveryCoordinator --> Orchestrator : sampled ImageCandidate batches
+DiscoveryGraph --> CanonicalPostgres : discovery schema
 CandidateJSONL --> Orchestrator : process-jsonl
 Orchestrator --> FilterService : classify_many
 Orchestrator --> Router : route_many
@@ -199,18 +216,27 @@ FilterService --> DecisionJSONL : append-only evidence
 SmokeTest --> ZeroShot
 MonitoringCLI --> HealthSnapshot
 MonitoringCLI --> HumanReview
+MonitoringCLI --> CreatorReview
+MonitoringCLI --> CorpusControl
 HealthSnapshot --> MonitoringUI : sanitized JSON snapshot
 MonitoringUI --> Operator : localhost browser UI
 Operator --> MonitoringUI : labels + useful/not-useful feedback
 MonitoringUI --> HumanReview : token-protected localhost API
+MonitoringUI --> CorpusControl : token-protected refresh / expand
 MonitoringConfig ..> HealthSnapshot
 MonitoringConfig ..> HumanReview
 SQLite --> HealthSnapshot : corpus / vectors / runs
 SQLite --> HumanReview : decisions + exact retrieval vectors
+SQLite --> CorpusControl : artists, pulled posts + high-water marks
 ProcessedFiles --> HumanReview : explicitly revealed media
 HumanReview --> ImageLoader : allowlisted remote fallback
 HumanReview --> ReviewArtifacts : immutable ArtworkLabel events
 HumanReview --> RetrievalArtifacts : immutable ranked judgments
+CreatorReview --> DiscoveryGraph : auditable creator decision
+CorpusControl --> PipelineCLI : incremental pull of current artists
+CorpusControl --> DiscoveryCLI : depth + hard AppView request cap
+DiscoveryGraph --> CorpusControl : creator nodes + typed edges
+CorpusControl --> ControlJobs : job inputs, progress + summaries
 DecisionJSONL --> HealthSnapshot : outcomes / latency / drift
 ReviewArtifacts --> HealthSnapshot : labeled filter evaluation
 RetrievalArtifacts --> HealthSnapshot : rank judgments + ANN report
@@ -260,8 +286,8 @@ SearchApiConfig ..> SearchAPI
 SearchApiConfig ..> QueryEncoder
 SearchAPI --> QueryEncoder : validated in-memory RGB
 QueryEncoder --> HuggingFace : pinned artifact cache miss only
-SearchAPI --> CloudQdrant : CLIP + CSD prefetch, RRF, top 100
-SearchAPI --> CanonicalPostgres : top-100 candidates + top-10 impressions
+SearchAPI --> CloudQdrant : async CLIP + CSD prefetch, RRF, top 100
+SearchAPI --> CanonicalPostgres : async catalog + per-query telemetry
 SearchAPI --> SearchFrontend : versioned results + score evidence
 MonitoringCLI --> CanonicalPostgres : aggregate latency, volume,\nfeedback + pipeline metrics
 SearchFrontend --> PublicAssets : result display images
@@ -338,9 +364,9 @@ cloud "Cloudflare edge" #E8F2FF {
   folder "R2 display derivatives" as R2Public
 }
 
-node "Small cloud VM" #E8F7EE {
-  component "FastAPI + public workbench\nsearch coordinator" as API
-  component "Bounded query encoder\npinned CLIP + CSD" as QueryEncoder
+node "Cloudflare Container pool\nup to three deterministic shards" #E8F7EE {
+  component "Async FastAPI + workbench\nnonblocking search coordinator" as API
+  component "Single-owner model executor\npinned CLIP + CSD" as QueryEncoder
   component "Airflow control plane\nprivate loopback surface" as Airflow
   component "Qdrant outbox worker\nidempotent publication" as CloudOutbox
 }
@@ -357,10 +383,10 @@ cloud "Ephemeral model compute" #FDECEC {
 User --> EdgePolicy : search and feedback over HTTPS
 EdgePolicy --> API : cached frontend + API proxy
 EdgePolicy --> R2Public : display derivatives
-API --> Postgres : queries, top-100 candidates,\ntop-10 impressions + graded feedback
+API --> Postgres : async catalog, query evidence,\nimpressions + graded feedback
 API --> QueryEncoder : validated in-memory image
 QueryEncoder --> API : version-compatible query vectors
-API --> Qdrant : filtered multi-vector recall
+API --> Qdrant : async filtered multi-vector recall
 API --> R2Public : result derivative metadata
 
 Airflow --> BatchWorker : scheduled versioned jobs
@@ -751,6 +777,14 @@ package "ingest" {
   queue "outbox_events\nSKIP LOCKED claims" as PGOutbox
 }
 
+package "discovery" {
+  entity "campaigns + sources + observations" as PGDiscoverySources
+  entity "graph entities + edges + evidence" as PGDiscoveryGraph
+  queue "frontier_tasks\nleased + bounded retry" as PGDiscoveryFrontier
+  entity "creator profiles + classification evidence" as PGDiscoveryEvidence
+  entity "coverage + exclusions + removals" as PGDiscoveryPolicy
+}
+
 package "product (RLS-ready)" {
   entity "users + sessions + queries" as PGQueries
   entity "ranking_runs + retrieval_candidates\n+ impressions" as PGRankings
@@ -767,6 +801,11 @@ Publisher --> PGEmbeddings
 Publisher --> PGIngest
 Publisher --> PGImports
 Publisher --> PGOutbox : same transaction
+PGDiscoverySources --> PGDiscoveryGraph
+PGDiscoveryGraph --> PGDiscoveryFrontier
+PGDiscoveryEvidence --> PGDiscoveryFrontier : expansion score
+PGDiscoveryPolicy --> PGDiscoveryFrontier : blocks/cancels work
+PGDiscoveryPolicy --> PGOutbox : remove derived subject
 PGArtworks --> PGR2 : object URI + content hash
 PGModels --> PGEmbeddings
 PGOutbox --> PGQdrant : idempotent upsert/delete
@@ -783,6 +822,164 @@ note bottom of PGFeedback
   Detailed events retain exact query/session,
   model/index version, scores, rank, and latency.
   Default retention: 180 days.
+end note
+
+@enduml
+
+
+@startuml ArtSearch_Ten_Million_Budget_Path
+title ArtSearch Ten-Million Budget Retrieval Path
+
+left to right direction
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam linetype ortho
+skinparam componentStyle rectangle
+skinparam defaultFontName SansSerif
+skinparam packageStyle rectangle
+skinparam ArrowColor #4B5563
+skinparam componentBorderColor #374151
+skinparam packageBorderColor #6B7280
+
+cloud "Bluesky source media\ntrusted CDN references" as Source #DCEEFF
+
+package "Offline supply and snapshot build" #F8FAFC {
+  component "Bounded intake\nHTTPX + SigLIP gate" as Intake #E8F7EE
+  component "CLIP + CSD embedding\nkeyset-streamed stale rows" as Embed #E8F7EE
+  database "SQLite staging\ncurrent vectors + audit" as Staging #FFF8E7
+  component "FAISS snapshot builder\nindependent OPQ/IVF/PQ indexes" as Builder #FDECEC
+  component "Exact-vs-ANN evaluation\nrecall + warm p95" as Eval #F3E8FF
+  component "USD 50 capacity gate\nprovider assumptions + headroom" as Budget #F3E8FF
+  component "Atomic snapshot promotion\nchecksums + model contract" as Promotion #F3E8FF
+  folder "Immutable snapshot\nindexes + FP16 rerank + catalog" as Snapshot #FFF8E7
+}
+
+package "Online query path" #F8FAFC {
+  component "Public API + query encoder\nCLIP query + CSD query" as API #E8F2FF
+  component "CLIP ANN recall" as ClipANN #FDECEC
+  component "CSD ANN recall" as CsdANN #FDECEC
+  component "Candidate union\napproximate RRF" as Union #FDECEC
+  component "Bounded exact FP16 rescore\nexact RRF + artist diversity" as Rerank #FDECEC
+  component "Top 10 + component evidence" as Results #E8F2FF
+  database "Compact PostgreSQL catalog\nidentity + source metadata" as Postgres #FFF8E7
+}
+
+cloud "R2\nversioned snapshots + bounded hot cache" as R2 #DCEEFF
+cloud "Current Qdrant alpha\nretained through shadow rollout" as Qdrant #DCEEFF
+
+Source --> Intake
+Intake --> Embed
+Embed --> Staging
+Staging --> Builder
+Builder --> Snapshot
+Snapshot --> Eval
+Budget --> Promotion
+Eval --> Promotion
+Snapshot --> Promotion
+Snapshot ..> R2 : planned/manual active + rollback copy
+Promotion --> API : active pointer + model bundle
+
+API --> ClipANN
+API --> CsdANN
+ClipANN --> Union
+CsdANN --> Union
+Union --> Rerank
+Snapshot --> ClipANN : compressed index
+Snapshot --> CsdANN : compressed index
+Snapshot --> Rerank : memory-mapped FP16 vectors
+Rerank --> Results
+Postgres --> Results : metadata + source URL
+R2 --> Results : cached display object when present
+Source --> Results : trusted CDN fallback
+Qdrant ..> API : rollback/shadow backend
+
+note bottom of Snapshot
+  Estimated at 27.716 GiB per 10M snapshot.
+  Build 100k and 1M rehearsals before 10M promotion.
+end note
+
+note bottom of R2
+  Scale profile does not retain every source original.
+  Full-original storage violates the current budget.
+end note
+
+@enduml
+
+
+@startuml ArtSearch_Corpus_Discovery_Loop
+title ArtSearch Provenance-Preserving Corpus Discovery Loop
+
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam defaultFontName SansSerif
+skinparam sequenceArrowThickness 1
+autonumber
+
+actor Operator
+participant "Airflow or discovery CLI" as Runner
+participant "Discovery oracles" as Oracles
+participant "Bluesky AppView" as AppView
+database "PostgreSQL discovery schema" as DiscoveryDB
+participant "DiscoveryCoordinator" as Coordinator
+participant "Bluesky hydrator" as Hydrator
+participant "Existing SigLIP intake pipeline" as Intake
+database "SQLite staging + local files" as SQLite
+participant "CLIP/CSD downstream jobs" as HeavyML
+database "Qdrant derived index" as Qdrant
+
+Operator -> Runner : start bounded campaign
+Runner -> DiscoveryDB : create campaign with config hash + budgets
+Runner -> Oracles : manual/search/Starter Pack sources
+Oracles -> AppView : ranked discovery reads
+AppView --> Oracles : creator leads and provenance
+Oracles --> Coordinator : DiscoverySuggestion stream
+
+loop each unique DID within creator budget
+  Coordinator -> Hydrator : fetch current profile
+  Hydrator -> AppView : getProfile
+  Coordinator -> DiscoveryDB : upsert creator + independent observation + edge evidence
+  Coordinator -> Coordinator : profile safety policy
+  alt blocked or excluded
+    Coordinator -> DiscoveryDB : block state + exclusion
+  else sample eligible or stale
+    Coordinator -> DiscoveryDB : enqueue media task
+  else fresh qualified score
+    Coordinator -> DiscoveryDB : enqueue bounded graph expansion
+  end
+end
+
+loop due frontier leases across current and interrupted campaigns
+  Coordinator -> DiscoveryDB : claim with FOR UPDATE SKIP LOCKED
+  alt sample creator media
+    Coordinator -> Hydrator : initial posts_with_media sample
+    Hydrator -> AppView : paged author feed
+    Coordinator -> Intake : classify and route sample
+    Intake -> SQLite : decisions + accepted corpus rows
+    Intake --> Coordinator : ordered ACCEPT/REVIEW/REJECT/ERROR evidence
+    Coordinator -> DiscoveryDB : posts, stable media identity, model evidence
+    alt preliminary creator qualifies
+      Coordinator -> Hydrator : deeper bounded media sample
+      Coordinator -> Intake : classify only unseen candidates
+    end
+    Coordinator -> DiscoveryDB : creator score components + explicit state
+  else expand qualified creator
+    Coordinator -> Oracles : outbound/suggested follows
+  end
+  Coordinator -> DiscoveryDB : complete, retry with backoff, or dead-letter task
+end
+
+Coordinator -> DiscoveryDB : finish campaign + coverage snapshot
+SQLite -> HeavyML : accepted standardized artwork
+HeavyML -> Qdrant : publish current CLIP subject + CSD style vectors
+
+note over Oracles,DiscoveryDB
+  A social/search observation is evidence, not an artist decision.
+  Replays preserve one entity and multiple idempotent evidence records.
+end note
+
+note over DiscoveryDB,Qdrant
+  PostgreSQL is canonical for discovery state.
+  SQLite is worker staging; Qdrant is derived and rebuildable.
 end note
 
 @enduml

@@ -78,7 +78,7 @@ def test_canary_preflight_passes_with_cloud_contracts(tmp_path: Path) -> None:
     assert any(check.check_id == "object_store.r2_region" for check in report.checks)
 
 
-def test_api_phase_requires_database_and_session_secret(tmp_path: Path) -> None:
+def test_api_phase_requires_database_and_runtime_secrets(tmp_path: Path) -> None:
     config = tmp_path / "production.alpha.local.toml"
     _write_config(config)
 
@@ -90,7 +90,11 @@ def test_api_phase_requires_database_and_session_secret(tmp_path: Path) -> None:
 
     assert report.ready is False
     failures = {check.check_id for check in report.checks if check.status == "fail"}
-    assert failures == {"postgres.database_url", "api.session_secret"}
+    assert failures == {
+        "postgres.database_url",
+        "api.session_secret",
+        "api.visitor_hash_secret",
+    }
 
 
 def test_report_never_serializes_secret_values(tmp_path: Path) -> None:
@@ -101,6 +105,7 @@ def test_report_never_serializes_secret_values(tmp_path: Path) -> None:
         "DATABASE_URL": "postgresql://sensitive",
         "DATABASE_DIRECT_URL": "postgresql://direct-sensitive",
         "ARTSEARCH_SESSION_SECRET": "s" * 32,
+        "ARTSEARCH_VISITOR_HASH_SECRET": "v" * 32,
         "MODAL_TOKEN_ID": "sensitive-modal-id",
         "MODAL_TOKEN_SECRET": "sensitive-modal-secret",
     }

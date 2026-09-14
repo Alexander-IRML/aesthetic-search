@@ -2,11 +2,13 @@ import { Container, getContainer } from "@cloudflare/containers";
 import { handleRetrievalAssistant } from "./assistant";
 
 const API_PORT = 8000;
-const CONTAINER_NAME = "primary";
+const CONTAINER_SHARD_COUNT = 3;
 const MAX_EDGE_UPLOAD_BYTES = 11_000_000;
+const MAX_VISIT_BYTES = 2_048;
 const MEDIA_ROUTE = "/media/";
 const ASSISTANT_ROUTE = "/api/retrieval-assistant";
 const RUNTIME_STATUS_ROUTE = "/api/runtime-status";
+const SITE_VISIT_ROUTE = "/api/site-visit";
 const FRONTEND_ASSETS = new Map<string, string>([
   ["/search", "/index.html"],
   ["/assets/app.css", "/app.css"],
@@ -17,6 +19,7 @@ const CONTAINER_ROUTES = new Set([
   "/api/openapi.json",
   "/api/result-feedback",
   "/api/search-by-image",
+  SITE_VISIT_ROUTE,
   "/health/live",
   "/health/ready",
 ]);
@@ -26,12 +29,15 @@ type RuntimeEnv = Env & {
   ASSETS: Fetcher;
   ASSISTANT_LOCATION_RATE_LIMITER: RateLimit;
   ASSISTANT_RATE_LIMITER: RateLimit;
+  ARTSEARCH_VISITOR_HASH_SECRET: string;
   DATABASE_URL: string;
   FEEDBACK_RATE_LIMITER: RateLimit;
   QDRANT_API_KEY: string;
   QDRANT_URL: string;
   SEARCH_LOCATION_RATE_LIMITER: RateLimit;
   SEARCH_RATE_LIMITER: RateLimit;
+  VISIT_LOCATION_RATE_LIMITER: RateLimit;
+  VISIT_RATE_LIMITER: RateLimit;
 };
 
 export class ArtSearchApiContainer extends Container {
@@ -111,9 +117,20 @@ export default {
         return rateLimited("Too many feedback events. Try again in a minute.");
       }
     }
+    if (request.method === "POST" && url.pathname === SITE_VISIT_ROUTE) {
+      const allowed = await allowVisit(request, env);
+      if (!allowed) {
+        return rateLimited("Too many visit events. Try again in a minute.");
+      }
+      const invalidRequest = validateSiteVisitRequest(request);
+      if (invalidRequest !== null) {
+        return invalidRequest;
+      }
+    }
 
     const edgeStarted = performance.now();
-    const container = getContainer(env.ARTSEARCH_API_CONTAINER, CONTAINER_NAME);
+    const shard = containerShard(request);
+    const container = getContainer(env.ARTSEARCH_API_CONTAINER, `search-${shard}`);
     let initialState = "unknown";
     try {
       initialState = (await container.getState()).status;
@@ -128,6 +145,7 @@ export default {
         startOptions: {
           envVars: {
             DATABASE_URL: env.DATABASE_URL,
+            ARTSEARCH_VISITOR_HASH_SECRET: env.ARTSEARCH_VISITOR_HASH_SECRET,
             HF_HUB_OFFLINE: "1",
             MKL_NUM_THREADS: "2",
             OMP_NUM_THREADS: "2",
@@ -151,6 +169,7 @@ export default {
       console.log(JSON.stringify({
         event: "artsearch.edge_request_completed",
         path: url.pathname,
+        container_shard: shard,
         initial_container_state: initialState,
         container_wait_ms: roundedMs(containerWaitMs),
         container_fetch_ms: roundedMs(containerFetchMs),
@@ -163,6 +182,7 @@ export default {
         containerWaitMs,
         containerFetchMs,
         edgeTotalMs,
+        shard,
       );
     } catch (error: unknown) {
       const errorName = error instanceof Error ? error.name : "UnknownError";
@@ -174,6 +194,7 @@ export default {
           elapsedMs(waitStarted),
           0,
           elapsedMs(edgeStarted),
+          shard,
         ),
       );
     }
@@ -188,7 +209,8 @@ async function serveRuntimeStatus(request: Request, env: RuntimeEnv): Promise<Re
     });
   }
 
-  const container = getContainer(env.ARTSEARCH_API_CONTAINER, CONTAINER_NAME);
+  const shard = containerShard(request);
+  const container = getContainer(env.ARTSEARCH_API_CONTAINER, `search-${shard}`);
   let payload: Record<string, boolean | number | string>;
   try {
     const state = await container.getState();
@@ -198,6 +220,8 @@ async function serveRuntimeStatus(request: Request, env: RuntimeEnv): Promise<Re
         : (state.status === "running" ? "warming" : "cold"),
       warm: state.status === "healthy",
       container_state: state.status,
+      container_shard: shard,
+      shard_count: CONTAINER_SHARD_COUNT,
       observed_at: new Date().toISOString(),
       last_change_at: new Date(state.lastChange).toISOString(),
     };
@@ -208,6 +232,8 @@ async function serveRuntimeStatus(request: Request, env: RuntimeEnv): Promise<Re
       status: "unknown",
       warm: false,
       container_state: "unknown",
+      container_shard: shard,
+      shard_count: CONTAINER_SHARD_COUNT,
       observed_at: new Date().toISOString(),
     };
   }
@@ -226,6 +252,7 @@ function withEdgeTiming(
   containerWaitMs: number,
   containerFetchMs: number,
   edgeTotalMs: number,
+  shard: number,
 ): Response {
   const headers = new Headers(response.headers);
   const timing = edgeTimingHeaders(
@@ -233,6 +260,7 @@ function withEdgeTiming(
     containerWaitMs,
     containerFetchMs,
     edgeTotalMs,
+    shard,
   );
   for (const [name, value] of timing) {
     if (name === "Server-Timing" && headers.has(name)) {
@@ -253,12 +281,14 @@ function edgeTimingHeaders(
   containerWaitMs: number,
   containerFetchMs: number,
   edgeTotalMs: number,
+  shard: number,
 ): Headers {
   const headers = new Headers();
   headers.set("X-ArtSearch-Container-State", initialState);
   headers.set("X-ArtSearch-Container-Wait-Ms", roundedMs(containerWaitMs).toString());
   headers.set("X-ArtSearch-Container-Fetch-Ms", roundedMs(containerFetchMs).toString());
   headers.set("X-ArtSearch-Edge-Total-Ms", roundedMs(edgeTotalMs).toString());
+  headers.set("X-ArtSearch-Container-Shard", `${shard + 1}/${CONTAINER_SHARD_COUNT}`);
   headers.set(
     "Server-Timing",
     [
@@ -360,6 +390,33 @@ async function allowFeedback(request: Request, env: RuntimeEnv): Promise<boolean
   return result.success;
 }
 
+async function allowVisit(request: Request, env: RuntimeEnv): Promise<boolean> {
+  const clientKey = request.headers.get("CF-Connecting-IP") ?? "unknown-client";
+  const [client, location] = await Promise.all([
+    env.VISIT_RATE_LIMITER.limit({ key: clientKey }),
+    env.VISIT_LOCATION_RATE_LIMITER.limit({ key: "public-site-visit" }),
+  ]);
+  return client.success && location.success;
+}
+
+function validateSiteVisitRequest(request: Request): Response | null {
+  const contentType = request.headers.get("Content-Type") ?? "";
+  if (!contentType.toLowerCase().startsWith("application/json")) {
+    return Response.json(
+      { error: { code: "invalid_content_type", message: "Visit telemetry requires JSON." } },
+      { status: 415, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+  const contentLength = Number(request.headers.get("Content-Length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_VISIT_BYTES) {
+    return Response.json(
+      { error: { code: "request_too_large", message: "Visit telemetry payload is too large." } },
+      { status: 413, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+  return null;
+}
+
 function rateLimited(message: string): Response {
   return Response.json(
     { error: { code: "rate_limited", message } },
@@ -436,6 +493,7 @@ function mediaKey(pathname: string, allowedPrefix: string): string | null {
 
 function requiredSecretNames(env: RuntimeEnv): string[] {
   const values: Record<string, string | undefined> = {
+    ARTSEARCH_VISITOR_HASH_SECRET: env.ARTSEARCH_VISITOR_HASH_SECRET,
     DATABASE_URL: env.DATABASE_URL,
     QDRANT_API_KEY: env.QDRANT_API_KEY,
     QDRANT_URL: env.QDRANT_URL,
@@ -443,6 +501,16 @@ function requiredSecretNames(env: RuntimeEnv): string[] {
   return Object.entries(values)
     .filter(([, value]) => !value)
     .map(([name]) => name);
+}
+
+function containerShard(request: Request): number {
+  const key = request.headers.get("CF-Connecting-IP") ?? "unknown-client";
+  let hash = 2_166_136_261;
+  for (let index = 0; index < key.length; index += 1) {
+    hash ^= key.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return (hash >>> 0) % CONTAINER_SHARD_COUNT;
 }
 
 function unavailable(message: string, extraHeaders: Headers = new Headers()): Response {
